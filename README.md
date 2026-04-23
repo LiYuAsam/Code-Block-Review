@@ -1,31 +1,39 @@
 # Code Block Review
 
-A VS Code extension for reviewing AI-assisted and manual code changes in block-based review sessions.
+English | [简体中文](./README.zh-CN.md)
 
-## What It Does
+Code Block Review is a VS Code extension that turns working tree changes into structured review sessions, so you can inspect edits as blocks instead of raw file diffs.
 
-Code Block Review adds a review layer on top of your working tree so you can inspect changes as structured blocks instead of raw file diffs.
+It works well for:
 
-It is designed for:
-
-- AI-generated edits
+- AI-assisted edits
 - tool-generated edits
 - manual follow-up edits
 - mixed sessions where AI and human changes happen together
 
-## Current Features
+## Why It Exists
 
-- Manual review sessions with `Start Review Session`
+Modern coding tools can change multiple files quickly, but the resulting edits often land in the working tree as ordinary file modifications. That makes review harder than it should be.
+
+Code Block Review adds a lightweight review layer on top of your workspace:
+
+- group changes into a review session
+- highlight added, deleted, and replaced blocks inline
+- review by block, file, or all remaining files
+- keep new edits inside the same session while review is still active
+
+## Features
+
+- Manual review sessions with `Code Block Review: Start Review Session`
 - Automatic capture for large or bursty edit sessions
-- Inline block highlighting for added, deleted, and replaced code
+- Block-based review instead of file-only diff review
 - Explorer sidebar that groups pending changes by file and block
 - Dedicated review panel with:
-  - previous / next block navigation
+  - previous / next navigation
   - accept / reject block
   - accept / reject current file
   - accept / reject all remaining files
-- Review sessions that continue to absorb new edits while the session is still active
-- Configurable ignored file globs for lockfiles, snapshots, and generated files
+- Ignore rules for lockfiles, generated files, snapshots, and other noisy outputs
 
 ## How It Works
 
@@ -34,30 +42,30 @@ It is designed for:
 1. Run `Code Block Review: Start Review Session`
 2. Make edits or let your AI tool edit code
 3. Run `Code Block Review: Stop Capture And Review`
-4. Review pending blocks from the Explorer view or review panel
+4. Review pending blocks from the Explorer view or the review panel
 
 ### Automatic flow
 
-When auto capture is enabled, the extension watches for bursty or large edits that look more like AI/tool output than ordinary typing.
+When auto capture is enabled, the extension watches for edit bursts that look more like AI or tool output than ordinary typing.
 
 After capture goes idle:
 
 - the status bar switches to a `Ready` state
-- you can jump directly into the review panel
+- you can jump straight into the review panel
 - or let the session expire and silently merge into the new baseline
 
 ## Configuration
 
-The extension currently supports:
+The extension currently supports configuration for:
 
 - ignored file globs
 - always-on auto capture
 - baseline refresh triggers
 - idle timing before review becomes available
 - review offer timeout
-- heuristic thresholds for burst detection
+- burst-detection thresholds
 
-See the extension settings panel for the full list.
+Open the extension settings panel for the full list.
 
 ## Local Development
 
@@ -70,11 +78,11 @@ Quick validation:
 npm run check
 ```
 
-## Project Status
+## Status
 
-This project is actively evolving. The current version is already usable, but the publishing metadata is still being finalized.
+Code Block Review is already usable and under active iteration. The current version focuses on making review sessions practical for real AI-assisted coding workflows.
 
-## Repository
+## Links
 
-- Issues: https://github.com/LiYuAsam/Code-Block-Review/issues
 - Repository: https://github.com/LiYuAsam/Code-Block-Review
+- Issues: https://github.com/LiYuAsam/Code-Block-Review/issues
