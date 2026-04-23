@@ -35,6 +35,12 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
   - 接受 / 拒绝全部剩余文件
 - 支持忽略 lockfile、生成文件、快照文件等噪音改动
 
+## Demo 演示页
+
+仓库里已经附带了一个可交互演示页：[code-block-review-demo.html](./code-block-review-demo.html)。
+
+可以直接用浏览器打开，按步骤体验手动 review 流程和自动捕获流程。
+
 ## 使用方式
 
 ### 手动模式

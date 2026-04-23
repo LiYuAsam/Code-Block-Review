@@ -35,6 +35,12 @@ Code Block Review adds a lightweight review layer on top of your workspace:
   - accept / reject all remaining files
 - Ignore rules for lockfiles, generated files, snapshots, and other noisy outputs
 
+## Demo
+
+An interactive demo page is included in this repo: [code-block-review-demo.html](./code-block-review-demo.html).
+
+Open it in a browser to walk through the manual review flow and the automatic capture flow visually.
+
 ## How It Works
 
 ### Manual flow
