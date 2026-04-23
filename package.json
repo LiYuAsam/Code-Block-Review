@@ -2,7 +2,7 @@
   "name": "code-block-review",
   "displayName": "Code Block Review",
   "description": "A VS Code extension for reviewing AI-assisted and manual code changes in block-based review sessions.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "liyuasam",
   "license": "MIT",
   "repository": {
@@ -164,6 +164,13 @@
           "maximum": 60,
           "description": "How long the auto-capture heuristic observes early edits before deciding whether they look like AI/external bulk edits. A longer window gives later edits more time to join the same burst; a shorter window decides sooner. / 自动捕获在做出判断前，观察首波改动行为的时间窗口；用于判断这些改动是否更像 AI/外部批量写入。窗口更长时，后续改动更容易并入同一波 burst；窗口更短时，系统会更早做出判断。"
         },
+        "codexReview.autoCapture.burstEventWindowMilliseconds": {
+          "type": "number",
+          "default": 500,
+          "minimum": 50,
+          "maximum": 10000,
+          "description": "A short event-density window used as an assist signal for machine-like edit speed. It does not trigger capture by itself; instead, high event density can slightly relax multi-file or burst-line thresholds inside the same observation window. / 一个用于检测“机器式高频编辑速度”的超短事件窗口。它本身不会单独触发 capture，而是作为辅助信号，在同一观察窗口内适度放宽多文件或 burst 行数阈值。"
+        },
         "codexReview.autoCapture.largeChangeLines": {
           "type": "number",
           "default": 8,
@@ -173,7 +180,7 @@
         },
         "codexReview.autoCapture.largeChangeChars": {
           "type": "number",
-          "default": 120,
+          "default": 200,
           "minimum": 1,
           "maximum": 1000000,
           "description": "A single edit changing at least this many characters is treated as a strong AI/external signal. Balanced default: `120`. Aggressive capture: `60-100`. Conservative capture: `180-300`. Lower values trigger more easily. / 单次改动变更至少这么多字符时，会被视为更强的 AI/外部写入信号。平衡推荐值：`120`。更激进：`60-100`。更保守：`180-300`。值越小越容易触发。"
@@ -187,24 +194,24 @@
         },
         "codexReview.autoCapture.multiFileMinLines": {
           "type": "number",
-          "default": 4,
+          "default": 8,
           "minimum": 1,
           "maximum": 100000,
           "description": "When multiple files are touched, the combined changed-line count must reach this threshold before auto-capture starts. Balanced default: `4`. Aggressive capture: `2-3`. Conservative capture: `8-12`. / 在多文件同时改动时，累计改动行数至少达到这个阈值，自动捕获才会真正开始。平衡推荐值：`4`。更激进：`2-3`。更保守：`8-12`。"
         },
         "codexReview.autoCapture.burstMinEvents": {
           "type": "number",
-          "default": 3,
+          "default": 10,
           "minimum": 1,
           "maximum": 10000,
-          "description": "How many rapid edit events within the observation window are needed before treating the activity as a burst. Balanced default: `3`. Aggressive capture: `2`. Conservative capture: `4-5`. / 在观察窗口内，至少需要多少次快速连续的编辑事件，才会被视为一次 burst 批量改动。平衡推荐值：`3`。更激进：`2`。更保守：`4-5`。"
+          "description": "How many edit events inside the short burst-event window are treated as a strong rapid-edit assist signal. This no longer triggers capture by itself; it only helps relax nearby multi-file or burst-line thresholds. The default `10` within `500ms` aims to stay above normal typing speed. / 在超短 burst 事件窗口内，至少需要多少次编辑事件，才会被视为强烈的高频编辑辅助信号。它不再单独触发 capture，只会用来适度放宽临近的多文件或 burst 行数阈值。默认是 `500ms` 内 `10` 次，目标是高于普通手动输入速度。"
         },
         "codexReview.autoCapture.burstMinLines": {
           "type": "number",
-          "default": 10,
+          "default": 18,
           "minimum": 1,
           "maximum": 100000,
-          "description": "How many total changed lines a burst needs before auto-capture starts. Balanced default: `10`. Aggressive capture: `5-8`. Conservative capture: `15-25`. / 一次 burst 批量改动累计至少改动多少行，自动捕获才会真正开始。平衡推荐值：`10`。更激进：`5-8`。更保守：`15-25`。"
+          "description": "How many unique touched lines within the observation window a burst needs before auto-capture starts. Repeated edits on the same line are merged instead of being counted again. Balanced default: `10`. Aggressive capture: `5-8`. Conservative capture: `15-25`. / 在观察窗口内，一次 burst 至少需要触达多少唯一行，自动捕获才会真正开始。同一行上的重复编辑会先合并，不会被重复累计。平衡推荐值：`10`。更激进：`5-8`。更保守：`15-25`。"
         }
       }
     },

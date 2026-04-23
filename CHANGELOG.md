@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.3
+
+- Refined auto-capture heuristics so rapid edit events only act as an assist signal instead of a standalone trigger
+- Removed temporary event-debug output and cleaned up related commands
+- Expanded the English and Chinese README with a clearer explanation of auto-capture behavior
+
 ## 0.0.2
 
 - Refined automatic capture defaults to reduce false positives during manual editing

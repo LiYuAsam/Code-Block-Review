@@ -54,6 +54,30 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - 你可以直接跳进 review panel
 - 或者什么都不做，让这轮改动静默吸收到新的 baseline 中
 
+### 自动捕获判定方式
+
+自动捕获使用的是一个短时间观察窗口，而不是把每一次编辑事件单独拿出来做硬判断。
+
+- `observationWindowSeconds`
+  控制首波改动会被观察多久，再决定是否进入 capture。
+- `largeChangeLines` / `largeChangeChars`
+  单次改动已经很大时，会直接触发 capture。
+- `multiFileMinFiles` + `multiFileMinLines`
+  跨文件改动会被视为比普通手动输入更可疑。
+- `burstMinLines`
+  统计观察窗口内触达的唯一行数；同一行上的重复编辑不会无限累加。
+- `burstEventWindowMilliseconds` + `burstMinEvents`
+  这是高频事件的辅助信号。现在它不会单独触发 capture，只会轻微放宽多文件或 burst 行数阈值。
+
+实际判定顺序可以简化成下面这样：
+
+| 场景 | 主要信号 | 结果 |
+| --- | --- | --- |
+| 单次改动已经很大 | `largeChangeLines` 或 `largeChangeChars` | 直接进入 capture |
+| 多个文件一起发生改动 | `multiFileMinFiles` 和 `multiFileMinLines` | 进入 capture |
+| 短窗口内累计改动了很多唯一行 | `burstMinLines` | 进入 capture |
+| 编辑事件非常密集 | `burstEventWindowMilliseconds` + `burstMinEvents` | 只作为辅助，不单独触发 |
+
 ## 配置项
 
 当前支持的配置主要包括：

@@ -54,6 +54,30 @@ After capture goes idle:
 - you can jump straight into the review panel
 - or let the session expire and silently merge into the new baseline
 
+### Auto-capture heuristics
+
+Auto capture uses a short observation window instead of trying to classify every single edit event in isolation.
+
+- `observationWindowSeconds`
+  Controls how long the extension watches the first burst of edits before deciding.
+- `largeChangeLines` / `largeChangeChars`
+  A single large edit can trigger capture immediately.
+- `multiFileMinFiles` + `multiFileMinLines`
+  Cross-file edits are treated as more suspicious than ordinary typing.
+- `burstMinLines`
+  Counts unique touched lines inside the observation window, so repeated edits on the same line do not keep inflating the score.
+- `burstEventWindowMilliseconds` + `burstMinEvents`
+  A rapid-event assist signal. High event density no longer triggers capture by itself; it only slightly relaxes nearby multi-file or burst-line thresholds.
+
+In practice, the extension decides in this order:
+
+| Situation | Main signal | Result |
+| --- | --- | --- |
+| One edit is already very large | `largeChangeLines` or `largeChangeChars` | Capture starts |
+| Multiple files change together | `multiFileMinFiles` and `multiFileMinLines` | Capture starts |
+| Many unique lines change inside the short window | `burstMinLines` | Capture starts |
+| Edit events are extremely dense | `burstEventWindowMilliseconds` + `burstMinEvents` | Only assists the two rules above |
+
 ## Configuration
 
 The extension currently supports configuration for:

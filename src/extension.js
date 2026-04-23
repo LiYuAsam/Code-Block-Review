@@ -413,14 +413,21 @@ class ReviewController {
   getAutoCaptureEvidenceSummary() {
     const thresholds = this.autoCaptureSettings.thresholds
     const uniqueUris = new Set()
-    let totalChangedLines = 0
+    const touchedLineSpansByUri = new Map()
     let totalChangedChars = 0
     let hasLargeChange = false
+    let rapidEventCount = 0
+    const rapidEventCutoff = Date.now() - this.autoCaptureSettings.burstEventWindowMs
 
     for (const entry of this.autoCaptureEvidence) {
       uniqueUris.add(entry.uri)
-      totalChangedLines += entry.changedLines
       totalChangedChars += entry.changedChars
+      const spans = touchedLineSpansByUri.get(entry.uri) ?? []
+      spans.push(...entry.touchedLineSpans)
+      touchedLineSpansByUri.set(entry.uri, spans)
+      if (entry.timestamp >= rapidEventCutoff) {
+        rapidEventCount += 1
+      }
 
       if (
         entry.changedLines >= thresholds.largeChangeLines ||
@@ -431,9 +438,9 @@ class ReviewController {
     }
 
     return {
-      eventCount: this.autoCaptureEvidence.length,
+      rapidEventCount,
       uniqueFileCount: uniqueUris.size,
-      totalChangedLines,
+      totalChangedLines: countUniqueTouchedLinesAcrossFiles(touchedLineSpansByUri),
       totalChangedChars,
       hasLargeChange
     }
@@ -442,6 +449,17 @@ class ReviewController {
   shouldStartAutoCaptureFromEvidence() {
     const summary = this.getAutoCaptureEvidenceSummary()
     const thresholds = this.autoCaptureSettings.thresholds
+    const burstAssistThreshold = Math.max(1, thresholds.burstMinEvents - 4)
+    const multiFileAssistThreshold = Math.max(burstAssistThreshold, thresholds.burstMinEvents - 2)
+    const adjustedBurstMinLines =
+      summary.rapidEventCount >= burstAssistThreshold
+        ? Math.max(1, thresholds.burstMinLines - 4)
+        : thresholds.burstMinLines
+    const adjustedMultiFileMinLines =
+      summary.rapidEventCount >= multiFileAssistThreshold &&
+      summary.uniqueFileCount >= thresholds.multiFileMinFiles
+        ? Math.max(1, thresholds.multiFileMinLines - 2)
+        : thresholds.multiFileMinLines
 
     if (summary.hasLargeChange) {
       return true
@@ -449,15 +467,12 @@ class ReviewController {
 
     if (
       summary.uniqueFileCount >= thresholds.multiFileMinFiles &&
-      summary.totalChangedLines >= thresholds.multiFileMinLines
+      summary.totalChangedLines >= adjustedMultiFileMinLines
     ) {
       return true
     }
 
-    if (
-      summary.eventCount >= thresholds.burstMinEvents &&
-      summary.totalChangedLines >= thresholds.burstMinLines
-    ) {
+    if (summary.totalChangedLines >= adjustedBurstMinLines) {
       return true
     }
 
@@ -888,7 +903,6 @@ class ReviewController {
 
     this.updateStatusBar()
   }
-
   async handleWorkspaceFilesDeleted(event) {
     if (!this.session) {
       return
@@ -2148,13 +2162,14 @@ function getAutoCaptureSettings() {
     captureIdleMs: clampNumber(config.get('captureIdleSeconds', 4), 1, 600) * 1000,
     reviewOfferMs: clampNumber(config.get('reviewOfferSeconds', 60), 1, 600) * 1000,
     observationWindowMs: clampNumber(config.get('observationWindowSeconds', 1.2), 0.1, 60) * 1000,
+    burstEventWindowMs: clampNumber(config.get('burstEventWindowMilliseconds', 500), 50, 10000),
     thresholds: {
       largeChangeLines: clampNumber(config.get('largeChangeLines', 8), 1, 10000),
-      largeChangeChars: clampNumber(config.get('largeChangeChars', 120), 1, 1000000),
+      largeChangeChars: clampNumber(config.get('largeChangeChars', 200), 1, 1000000),
       multiFileMinFiles: clampNumber(config.get('multiFileMinFiles', 2), 1, 1000),
-      multiFileMinLines: clampNumber(config.get('multiFileMinLines', 4), 1, 100000),
-      burstMinEvents: clampNumber(config.get('burstMinEvents', 3), 1, 10000),
-      burstMinLines: clampNumber(config.get('burstMinLines', 10), 1, 100000)
+      multiFileMinLines: clampNumber(config.get('multiFileMinLines', 8), 1, 100000),
+      burstMinEvents: clampNumber(config.get('burstMinEvents', 10), 1, 10000),
+      burstMinLines: clampNumber(config.get('burstMinLines', 18), 1, 100000)
     }
   }
 }
@@ -2170,20 +2185,80 @@ function clampNumber(value, min, max) {
 function summarizeAutoCaptureEvent(event) {
   let changedLines = 0
   let changedChars = 0
+  const touchedLineSpans = []
 
   for (const change of event.contentChanges) {
-    const insertedLines = countInsertedLines(change.text)
-    const removedLines = countRemovedLines(change)
-    const touchedLines = Math.max(insertedLines, removedLines, (change.text.length > 0 || change.rangeLength > 0) ? 1 : 0)
+    const touchedLineSpan = getTouchedLineSpan(change)
+    const touchedLines = touchedLineSpan
+      ? (touchedLineSpan[1] - touchedLineSpan[0]) + 1
+      : 0
 
     changedLines += touchedLines
     changedChars += change.text.length + change.rangeLength
+    if (touchedLineSpan) {
+      touchedLineSpans.push(touchedLineSpan)
+    }
   }
 
   return {
     changedLines,
-    changedChars
+    changedChars,
+    touchedLineSpans
   }
+}
+
+function getTouchedLineSpan(change) {
+  if (!change || (change.text.length === 0 && change.rangeLength === 0)) {
+    return null
+  }
+
+  const insertedLines = countInsertedLines(change.text)
+  const removedLines = countRemovedLines(change)
+  const touchedLines = Math.max(insertedLines, removedLines, 1)
+  const startLine = change.range.start.line
+  return [startLine, startLine + touchedLines - 1]
+}
+
+function countUniqueTouchedLinesAcrossFiles(spansByUri) {
+  let total = 0
+  for (const spans of spansByUri.values()) {
+    total += countUniqueTouchedLines(spans)
+  }
+  return total
+}
+
+function countUniqueTouchedLines(spans) {
+  if (!Array.isArray(spans) || spans.length === 0) {
+    return 0
+  }
+
+  const sorted = spans
+    .filter((span) => Array.isArray(span) && span.length === 2)
+    .map((span) => [Number(span[0]), Number(span[1])])
+    .filter(([start, end]) => Number.isInteger(start) && Number.isInteger(end) && end >= start)
+    .sort((a, b) => a[0] - b[0])
+
+  if (sorted.length === 0) {
+    return 0
+  }
+
+  let total = 0
+  let [currentStart, currentEnd] = sorted[0]
+
+  for (let index = 1; index < sorted.length; index += 1) {
+    const [start, end] = sorted[index]
+    if (start <= currentEnd + 1) {
+      currentEnd = Math.max(currentEnd, end)
+      continue
+    }
+
+    total += (currentEnd - currentStart) + 1
+    currentStart = start
+    currentEnd = end
+  }
+
+  total += (currentEnd - currentStart) + 1
+  return total
 }
 
 function isUndoOrRedoChange(event) {
