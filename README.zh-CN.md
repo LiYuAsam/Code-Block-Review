@@ -44,9 +44,9 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 
 ## Demo 演示页
 
-仓库里已经附带了一个可交互演示页：[code-block-review-demo.html](./code-block-review-demo.html)。
+在线演示页地址：[code-block-review-demo.html](https://liyuasam.github.io/Code-Block-Review/code-block-review-demo.html)。
 
-可以直接用浏览器打开，按步骤体验手动 review 流程和自动捕获流程。
+仓库里也保留了对应的 HTML 源文件，方便你在本地继续修改和维护。
 
 ## 使用方式
 

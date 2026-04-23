@@ -44,9 +44,9 @@ Code Block Review adds a lightweight review layer on top of your workspace:
 
 ## Demo
 
-An interactive demo page is included in this repo: [code-block-review-demo.html](./code-block-review-demo.html).
+Try the live demo here: [code-block-review-demo.html](https://liyuasam.github.io/Code-Block-Review/code-block-review-demo.html).
 
-Open it in a browser to walk through the manual review flow and the automatic capture flow visually.
+The source file is also included in this repo if you want to inspect or update it locally.
 
 ## How It Works
 
