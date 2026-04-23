@@ -2147,7 +2147,7 @@ function getAutoCaptureSettings() {
     triggerEvents,
     captureIdleMs: clampNumber(config.get('captureIdleSeconds', 4), 1, 600) * 1000,
     reviewOfferMs: clampNumber(config.get('reviewOfferSeconds', 60), 1, 600) * 1000,
-    observationWindowMs: clampNumber(config.get('observationWindowSeconds', 2), 0.1, 60) * 1000,
+    observationWindowMs: clampNumber(config.get('observationWindowSeconds', 1.2), 0.1, 60) * 1000,
     thresholds: {
       largeChangeLines: clampNumber(config.get('largeChangeLines', 8), 1, 10000),
       largeChangeChars: clampNumber(config.get('largeChangeChars', 120), 1, 1000000),

@@ -2,7 +2,7 @@
   "name": "code-block-review",
   "displayName": "Code Block Review",
   "description": "A VS Code extension for reviewing AI-assisted and manual code changes in block-based review sessions.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "liyuasam",
   "license": "MIT",
   "repository": {
@@ -159,7 +159,7 @@
         },
         "codexReview.autoCapture.observationWindowSeconds": {
           "type": "number",
-          "default": 2,
+          "default": 1.2,
           "minimum": 0.1,
           "maximum": 60,
           "description": "How long the auto-capture heuristic observes early edits before deciding whether they look like AI/external bulk edits. A longer window gives later edits more time to join the same burst; a shorter window decides sooner. / 自动捕获在做出判断前，观察首波改动行为的时间窗口；用于判断这些改动是否更像 AI/外部批量写入。窗口更长时，后续改动更容易并入同一波 burst；窗口更短时，系统会更早做出判断。"
