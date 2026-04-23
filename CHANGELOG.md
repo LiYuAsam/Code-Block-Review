@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.4
+
+- Added clearer in-editor review actions with `Accept`, `Reject`, `Prev Block`, `Next Block`, and `Review`
+- Kept inline `ADDED` / `REPLACED` / `DELETED` badges while refining the editor-first review flow
+- Changed the auto-capture review prompt so `Start Review` jumps to the first pending block instead of forcing the side panel
+- Refreshed the English and Chinese README to match the latest review workflow
+
 ## 0.0.3
 
 - Refined auto-capture heuristics so rapid edit events only act as an assist signal instead of a standalone trigger

@@ -28,6 +28,13 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - 自动捕获大改动或 burst 式改动
 - 以代码块为中心进行审查，而不是只看文件级 diff
 - 在 Explorer 侧边栏按文件和代码块展示待审改动
+- 在编辑器内用醒目的 inline badge 标出 `ADDED`、`REPLACED`、`DELETED`
+- 每个待审代码块下方提供编辑器内操作按钮：
+  - `Accept`
+  - `Reject`
+  - `Prev Block`
+  - `Next Block`
+  - `Review`
 - 提供专门的 review panel，支持：
   - 上一个 / 下一个代码块
   - 接受 / 拒绝当前代码块
@@ -48,7 +55,16 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 1. 执行 `Code Block Review: Start Review Session`
 2. 自己修改代码，或者让 AI / 工具修改代码
 3. 执行 `Code Block Review: Stop Capture And Review`
-4. 在 Explorer 侧边栏或 review panel 中审查待处理的代码块
+4. 直接在编辑器内、Explorer 侧边栏，或 review panel 中审查待处理的代码块
+
+### 编辑器内审查流程
+
+每个待审代码块都会被高亮出来，并在代码块下方提供一组紧凑操作按钮：
+
+- `Accept`：保留当前代码块，并自动跳到下一条 pending block
+- `Reject`：恢复 baseline 内容，并自动跳到下一条 pending block
+- `Prev Block` / `Next Block`：不离开编辑器，直接在待审代码块之间切换
+- `Review`：打开右侧专门的 review panel，查看更完整的块级对比
 
 ### 自动模式
 
@@ -57,7 +73,8 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 当一轮 capture 进入空闲状态后：
 
 - 左下角状态栏会进入 `Ready` 状态
-- 你可以直接跳进 review panel
+- 通知里的 `Start Review` 会直接进入 review，并跳到第一条 pending block
+- 你仍然可以随时打开专门的 review panel
 - 或者什么都不做，让这轮改动静默吸收到新的 baseline 中
 
 ### 自动捕获判定方式

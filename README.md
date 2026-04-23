@@ -28,6 +28,13 @@ Code Block Review adds a lightweight review layer on top of your workspace:
 - Automatic capture for large or bursty edit sessions
 - Block-based review instead of file-only diff review
 - Explorer sidebar that groups pending changes by file and block
+- Inline block badges for `ADDED`, `REPLACED`, and `DELETED` changes
+- Editor-first review actions under each pending block:
+  - `Accept`
+  - `Reject`
+  - `Prev Block`
+  - `Next Block`
+  - `Review`
 - Dedicated review panel with:
   - previous / next navigation
   - accept / reject block
@@ -48,7 +55,16 @@ Open it in a browser to walk through the manual review flow and the automatic ca
 1. Run `Code Block Review: Start Review Session`
 2. Make edits or let your AI tool edit code
 3. Run `Code Block Review: Stop Capture And Review`
-4. Review pending blocks from the Explorer view or the review panel
+4. Review pending blocks directly in the editor, from the Explorer view, or in the review panel
+
+### In-editor review flow
+
+Each pending block is highlighted inline and gets a compact action row under the code block:
+
+- `Accept` keeps the current block and jumps to the next pending block
+- `Reject` restores the baseline version and jumps to the next pending block
+- `Prev Block` / `Next Block` move between pending blocks without leaving the editor
+- `Review` opens the dedicated side panel for a larger block-by-block comparison
 
 ### Automatic flow
 
@@ -57,7 +73,8 @@ When auto capture is enabled, the extension watches for edit bursts that look mo
 After capture goes idle:
 
 - the status bar switches to a `Ready` state
-- you can jump straight into the review panel
+- the notification action starts review and jumps to the first pending block
+- you can still open the dedicated review panel at any time
 - or let the session expire and silently merge into the new baseline
 
 ### Auto-capture heuristics

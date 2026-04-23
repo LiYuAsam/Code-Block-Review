@@ -29,12 +29,18 @@ class ReviewController {
     this.autoCaptureReviewOfferTimer = null
     this.autoCaptureObservationTimer = null
     this.autoCaptureBaselineRefreshPromise = null
+    this.workspaceRescanTimer = null
+    this.pendingWorkspaceRescanReason = null
+    this.autoCaptureFilesystemProbeTimer = null
+    this.workspaceWatcherDisposables = []
     this.autoCaptureIdleBaselineByUri = new Map()
     this.autoCaptureCandidateBaselineByUri = new Map()
     this.autoCaptureEvidence = []
+    this.autoCaptureFilesystemProbeUris = new Set()
     this.autoCaptureReviewPending = false
     this.autoCaptureReviewPromptNonce = 0
     this.autoCaptureSettings = getAutoCaptureSettings()
+    this.initializeWorkspaceWatchers()
 
     this.treeProvider = new ReviewTreeProvider(this)
     this.blockActionProvider = new ReviewBlockCodeLensProvider(this)
@@ -114,6 +120,9 @@ class ReviewController {
       vscode.workspace.onDidChangeConfiguration((event) => {
         void this.handleConfigurationChange(event)
       }),
+      vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        this.initializeWorkspaceWatchers()
+      }),
       vscode.window.onDidChangeWindowState((windowState) => {
         void this.handleWindowStateChange(windowState)
       }),
@@ -134,6 +143,10 @@ class ReviewController {
       vscode.commands.registerCommand('codexReview.previewBlock', (item) => this.previewBlock(item)),
       vscode.commands.registerCommand('codexReview.acceptBlock', (item) => this.acceptBlock(item)),
       vscode.commands.registerCommand('codexReview.rejectBlock', (item) => this.rejectBlock(item)),
+      vscode.commands.registerCommand('codexReview.acceptBlockAndAdvance', (item) => this.acceptBlockAndAdvance(item)),
+      vscode.commands.registerCommand('codexReview.rejectBlockAndAdvance', (item) => this.rejectBlockAndAdvance(item)),
+      vscode.commands.registerCommand('codexReview.openPreviousPendingBlock', (item) => this.openAdjacentPendingBlock(item, -1)),
+      vscode.commands.registerCommand('codexReview.openNextPendingBlock', (item) => this.openAdjacentPendingBlock(item, 1)),
       vscode.commands.registerCommand('codexReview.acceptFile', (item) => this.acceptFile(item)),
       vscode.commands.registerCommand('codexReview.rejectFile', (item) => this.rejectFile(item))
     )
@@ -145,8 +158,44 @@ class ReviewController {
 
   dispose() {
     this.clearAutoCaptureTimers()
+    this.clearWorkspaceRescanTimer()
+    this.clearAutoCaptureFilesystemProbeTimer()
+    this.disposeWorkspaceWatchers()
     this.disposeReviewPanel()
     this.clearDecorations()
+  }
+
+  initializeWorkspaceWatchers() {
+    this.disposeWorkspaceWatchers()
+
+    const folders = vscode.workspace.workspaceFolders ?? []
+    for (const folder of folders) {
+      // Use a RelativePattern rooted at each workspace folder so file watching
+      // is explicitly constrained to the current project/workspace only.
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(folder, WORKSPACE_INCLUDE_GLOB)
+      )
+
+      this.workspaceWatcherDisposables.push(
+        watcher,
+        watcher.onDidChange((uri) => {
+          void this.handleWorkspaceFileChanged('change', uri)
+        }),
+        watcher.onDidCreate((uri) => {
+          void this.handleWorkspaceFileChanged('create', uri)
+        }),
+        watcher.onDidDelete((uri) => {
+          void this.handleWorkspaceFileChanged('delete', uri)
+        })
+      )
+    }
+  }
+
+  disposeWorkspaceWatchers() {
+    for (const disposable of this.workspaceWatcherDisposables) {
+      disposable.dispose()
+    }
+    this.workspaceWatcherDisposables = []
   }
 
   async handleConfigurationChange(event) {
@@ -226,6 +275,21 @@ class ReviewController {
     this.clearAutoStopTimer()
     this.clearAutoReviewOfferTimer()
     this.clearAutoObservationTimer()
+  }
+
+  clearWorkspaceRescanTimer() {
+    if (this.workspaceRescanTimer) {
+      clearTimeout(this.workspaceRescanTimer)
+      this.workspaceRescanTimer = null
+    }
+    this.pendingWorkspaceRescanReason = null
+  }
+
+  clearAutoCaptureFilesystemProbeTimer() {
+    if (this.autoCaptureFilesystemProbeTimer) {
+      clearTimeout(this.autoCaptureFilesystemProbeTimer)
+      this.autoCaptureFilesystemProbeTimer = null
+    }
   }
 
   async refreshAutoCaptureBaseline() {
@@ -384,7 +448,7 @@ class ReviewController {
       }
 
       if (selection === 'Start Review') {
-        void this.enterReadyReview()
+        void this.enterReadyReviewAndOpenFirstPendingBlock()
         return
       }
 
@@ -545,9 +609,140 @@ class ReviewController {
 
     this.autoCaptureEvidence = this.autoCaptureEvidence.filter((entry) => entry.uri !== uriString)
     this.autoCaptureCandidateBaselineByUri.delete(uriString)
+    this.autoCaptureFilesystemProbeUris.delete(uriString)
     if (this.autoCaptureEvidence.length === 0) {
       this.clearAutoObservationTimer()
     }
+  }
+
+  async handleWorkspaceFileChanged(kind, uri) {
+    if (!uri || (uri.scheme !== 'file' && uri.scheme !== 'untitled')) {
+      return
+    }
+
+    if (!vscode.workspace.getWorkspaceFolder(uri)) {
+      return
+    }
+
+    if (kind !== 'delete' && !isTrackableUri(uri)) {
+      return
+    }
+
+    if (this.session) {
+      this.scheduleWorkspaceRescan(`watcher-${kind}`)
+      return
+    }
+
+    if (!this.autoCaptureSettings.enabled) {
+      return
+    }
+
+    this.scheduleAutoCaptureFilesystemProbe(uri)
+  }
+
+  scheduleWorkspaceRescan(reason = 'watcher') {
+    this.pendingWorkspaceRescanReason = reason
+    if (this.workspaceRescanTimer) {
+      return
+    }
+
+    this.workspaceRescanTimer = setTimeout(() => {
+      this.workspaceRescanTimer = null
+      const pendingReason = this.pendingWorkspaceRescanReason ?? 'watcher'
+      this.pendingWorkspaceRescanReason = null
+      void this.flushScheduledWorkspaceRescan(pendingReason)
+    }, 200)
+  }
+
+  async flushScheduledWorkspaceRescan(reason) {
+    if (!this.session) {
+      return
+    }
+
+    await this.scanWorkspaceForChanges(reason)
+    this.treeProvider.refresh()
+    this.blockActionProvider.refresh()
+    this.updateStatusBar()
+    this.refreshAllVisibleEditors()
+
+    if (this.state === 'reviewing') {
+      await this.refreshReviewPanel()
+      await this.maybeAutoComplete()
+    }
+  }
+
+  scheduleAutoCaptureFilesystemProbe(uri) {
+    this.autoCaptureFilesystemProbeUris.add(uri.toString())
+    if (this.autoCaptureFilesystemProbeTimer) {
+      return
+    }
+
+    this.autoCaptureFilesystemProbeTimer = setTimeout(() => {
+      this.autoCaptureFilesystemProbeTimer = null
+      void this.flushAutoCaptureFilesystemProbe()
+    }, 200)
+  }
+
+  async flushAutoCaptureFilesystemProbe() {
+    if (!this.autoCaptureSettings.enabled || this.session || this.state !== 'idle') {
+      this.autoCaptureFilesystemProbeUris.clear()
+      return
+    }
+
+    await this.ensureAutoCaptureReady({ silent: true })
+
+    if (this.autoCaptureState !== 'armed' || this.state !== 'idle') {
+      this.autoCaptureFilesystemProbeUris.clear()
+      return
+    }
+
+    const pendingUriStrings = [...this.autoCaptureFilesystemProbeUris]
+    this.autoCaptureFilesystemProbeUris.clear()
+
+    for (const uriString of pendingUriStrings) {
+      const uri = vscode.Uri.parse(uriString)
+      if (!isTrackableUri(uri)) {
+        continue
+      }
+
+      const existsInWorkspace = await uriExists(uri)
+      const currentText = await getCurrentTrackedText(uri, existsInWorkspace)
+      const candidateBaselineText = this.autoCaptureCandidateBaselineByUri.get(uriString)
+      const baselineText = candidateBaselineText ?? this.autoCaptureIdleBaselineByUri.get(uriString) ?? ''
+
+      if (currentText === null && !this.autoCaptureIdleBaselineByUri.has(uriString)) {
+        this.dropAutoCaptureEvidenceForUri(uriString)
+        continue
+      }
+
+      if (currentText === baselineText) {
+        this.dropAutoCaptureEvidenceForUri(uriString)
+        continue
+      }
+
+      this.autoCaptureCandidateBaselineByUri.set(uriString, baselineText)
+      this.autoCaptureEvidence = this.autoCaptureEvidence.filter((entry) => entry.uri !== uriString)
+      this.autoCaptureEvidence.push({
+        timestamp: Date.now(),
+        uri: uriString,
+        ...summarizeTextDelta(baselineText, currentText ?? '')
+      })
+    }
+
+    if (!this.autoCaptureEvidence.length) {
+      this.updateStatusBar()
+      await this.syncContexts()
+      return
+    }
+
+    if (this.shouldStartAutoCaptureFromEvidence()) {
+      await this.startAutoCaptureFromEvidence()
+      return
+    }
+
+    this.scheduleAutoCaptureObservationTimeout()
+    this.updateStatusBar()
+    await this.syncContexts()
   }
 
   async startAutoCaptureFromEvidence() {
@@ -784,6 +979,26 @@ class ReviewController {
     }
 
     return false
+  }
+
+  async enterReadyReviewAndOpenFirstPendingBlock() {
+    const entered = await this.enterReadyReviewWithoutPanel()
+    if (!entered) {
+      return false
+    }
+
+    return this.openFirstPendingBlock()
+  }
+
+  async enterReadyReviewWithoutPanel() {
+    if (this.sessionMode === 'auto' && this.state === 'capturing' && this.autoCaptureReviewPending) {
+      return this.stopSession({
+        silent: true,
+        requestedMode: 'auto'
+      })
+    }
+
+    return this.state === 'reviewing'
   }
 
   async handleAutoCaptureIdleReached() {
@@ -1145,6 +1360,35 @@ class ReviewController {
     }
   }
 
+  async openFirstPendingBlock() {
+    if (this.state !== 'reviewing' || !this.session) {
+      return false
+    }
+
+    const firstPendingItem = this.getOrderedPendingBlockItems()[0] ?? null
+    if (!firstPendingItem) {
+      void vscode.window.showInformationMessage('No pending review blocks are available.')
+      return false
+    }
+
+    await this.openBlock(firstPendingItem)
+    return true
+  }
+
+  async openAdjacentPendingBlock(item, direction) {
+    if (this.state !== 'reviewing' || !this.session) {
+      return false
+    }
+
+    const targetItem = this.getAdjacentPendingBlockItem(item, direction)
+    if (!targetItem) {
+      return false
+    }
+
+    await this.openBlock(targetItem)
+    return true
+  }
+
   async openReviewPanel(item) {
     if (this.state !== 'reviewing' || !this.session) {
       return
@@ -1220,6 +1464,15 @@ class ReviewController {
     await this.maybeAutoComplete()
   }
 
+  async acceptBlockAndAdvance(item) {
+    const nextItem = this.getPreferredNextReviewItem(item)
+    await this.acceptBlock(item)
+
+    if (nextItem && this.state === 'reviewing') {
+      await this.openBlock(nextItem)
+    }
+  }
+
   async previewBlock(item) {
     await this.openReviewPanel(item)
   }
@@ -1250,6 +1503,15 @@ class ReviewController {
 
     if (currentText === nextText) {
       void vscode.window.showInformationMessage('Reject did not change the file. The block may already match the baseline.')
+    }
+  }
+
+  async rejectBlockAndAdvance(item) {
+    const nextItem = this.getPreferredNextReviewItem(item)
+    await this.rejectBlock(item)
+
+    if (nextItem && this.state === 'reviewing') {
+      await this.openBlock(nextItem)
     }
   }
 
@@ -1423,7 +1685,7 @@ class ReviewController {
           const previousItem = this.getAdjacentPendingBlockItem(this.reviewPanelState.currentItem, -1)
           if (previousItem) {
             this.reviewPanelState.currentItem = previousItem
-            await this.revealReviewBlock(previousItem)
+            await this.safeRevealReviewBlock(previousItem)
             await this.refreshReviewPanel()
           }
           return
@@ -1433,7 +1695,7 @@ class ReviewController {
           const nextItem = this.getAdjacentPendingBlockItem(this.reviewPanelState.currentItem, 1)
           if (nextItem) {
             this.reviewPanelState.currentItem = nextItem
-            await this.revealReviewBlock(nextItem)
+            await this.safeRevealReviewBlock(nextItem)
             await this.refreshReviewPanel()
           }
           return
@@ -1455,7 +1717,7 @@ class ReviewController {
             uri: block.uri
           })
           if (this.reviewPanelState && nextItem) {
-            await this.revealReviewBlock(nextItem)
+            await this.safeRevealReviewBlock(nextItem)
           }
           await this.refreshReviewPanel()
           return
@@ -1482,7 +1744,7 @@ class ReviewController {
             uri: block.uri
           })
           if (this.reviewPanelState && nextItem) {
-            await this.revealReviewBlock(nextItem)
+            await this.safeRevealReviewBlock(nextItem)
           }
           await this.refreshReviewPanel()
           return
@@ -1501,7 +1763,7 @@ class ReviewController {
           }
           await this.acceptBlock(activeItem)
           if (this.reviewPanelState && nextItem) {
-            await this.revealReviewBlock(nextItem)
+            await this.safeRevealReviewBlock(nextItem)
           }
           await this.refreshReviewPanel()
           return
@@ -1515,7 +1777,7 @@ class ReviewController {
           }
           await this.rejectBlock(activeItem)
           if (this.reviewPanelState && nextItem) {
-            await this.revealReviewBlock(nextItem)
+            await this.safeRevealReviewBlock(nextItem)
           }
           await this.refreshReviewPanel()
           return
@@ -1528,8 +1790,9 @@ class ReviewController {
     this.reviewPanelState.sourceViewColumn = this.getPreferredSourceViewColumn()
     this.markReviewItemSeen(item)
     this.reviewPanelState.panel.title = `Code Block Review: ${formatBlockLabel(block.block)}`
+    this.reviewPanelState.panel.webview.html = createReviewPanelLoadingHtml(this.reviewPanelState.fallbackBlock)
     this.reviewPanelState.panel.reveal(vscode.ViewColumn.Beside, true)
-    await this.revealReviewBlock(item)
+    await this.safeRevealReviewBlock(item)
     await this.refreshReviewPanel()
   }
 
@@ -1567,7 +1830,7 @@ class ReviewController {
       const fallbackItem = this.getOrderedPendingBlockItems()[0]
       if (fallbackItem) {
         this.reviewPanelState.currentItem = fallbackItem
-        await this.revealReviewBlock(fallbackItem)
+        await this.safeRevealReviewBlock(fallbackItem)
         await this.refreshReviewPanel()
         return
       }
@@ -1768,6 +2031,14 @@ class ReviewController {
       editor.revealRange(range, vscode.TextEditorRevealType.InCenter)
     }
     this.refreshAllVisibleEditors()
+  }
+
+  async safeRevealReviewBlock(item, options = {}) {
+    try {
+      await this.revealReviewBlock(item, options)
+    } catch (error) {
+      console.error('Code Block Review: failed to reveal review block', error)
+    }
   }
 
   updateStatusBar() {
@@ -1977,26 +2248,46 @@ class ReviewBlockCodeLensProvider {
       }
 
       const args = [createReviewItem(file.uri, block)]
+      codeLenses.push(new vscode.CodeLens(range, {
+        command: 'codexReview.acceptBlockAndAdvance',
+        title: '$(pass-filled) Accept',
+        arguments: args,
+        tooltip: 'Accept this review block and jump to the next pending block'
+      }))
+
+      codeLenses.push(new vscode.CodeLens(range, {
+        command: 'codexReview.rejectBlockAndAdvance',
+        title: '$(error) Reject',
+        arguments: args,
+        tooltip: 'Reject this review block and jump to the next pending block'
+      }))
+
+      const previousItem = this.controller.getAdjacentPendingBlockItem(args[0], -1)
+      const nextItem = this.controller.getAdjacentPendingBlockItem(args[0], 1)
+
+      if (previousItem) {
+        codeLenses.push(new vscode.CodeLens(range, {
+          command: 'codexReview.openPreviousPendingBlock',
+          title: '$(arrow-left) Prev Block',
+          arguments: args,
+          tooltip: 'Jump to the previous pending review block'
+        }))
+      }
+
+      if (nextItem) {
+        codeLenses.push(new vscode.CodeLens(range, {
+          command: 'codexReview.openNextPendingBlock',
+          title: '$(arrow-right) Next Block',
+          arguments: args,
+          tooltip: 'Jump to the next pending review block'
+        }))
+      }
 
       codeLenses.push(new vscode.CodeLens(range, {
         command: 'codexReview.previewBlock',
-        title: `$(open-preview) Open Review Panel: ${formatActionTitleSuffix(block)}`,
+        title: '$(open-preview) Review',
         arguments: args,
         tooltip: 'Open the dedicated review panel for this block'
-      }))
-
-      codeLenses.push(new vscode.CodeLens(range, {
-        command: 'codexReview.acceptBlock',
-        title: `$(check) KEEP THIS ${formatActionTitleSuffix(block)}`,
-        arguments: args,
-        tooltip: 'Accept this review block'
-      }))
-
-      codeLenses.push(new vscode.CodeLens(range, {
-        command: 'codexReview.rejectBlock',
-        title: `$(close) REJECT THIS ${formatActionTitleSuffix(block)}`,
-        arguments: args,
-        tooltip: 'Reject this review block'
       }))
     }
 
@@ -2290,6 +2581,31 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
+}
+
+function summarizeTextDelta(originalText, modifiedText) {
+  const blocks = buildReviewBlocks(originalText, modifiedText)
+  let changedLines = 0
+  let changedChars = 0
+  const touchedLineSpans = []
+
+  for (const block of blocks) {
+    const originalLineCount = Math.max(block.originalEnd - block.originalStart, 0)
+    const modifiedLineCount = Math.max(block.modifiedEnd - block.modifiedStart, 0)
+    const touchedLines = Math.max(originalLineCount, modifiedLineCount, 1)
+    changedLines += touchedLines
+    changedChars += block.originalText.length + block.modifiedText.length
+    touchedLineSpans.push([
+      block.modifiedStart,
+      Math.max(block.modifiedEnd - 1, block.modifiedStart + touchedLines - 1)
+    ])
+  }
+
+  return {
+    changedLines,
+    changedChars,
+    touchedLineSpans
+  }
 }
 
 function toWorkspaceLabel(uri) {
@@ -2645,12 +2961,6 @@ function createDecorationOption(range, fileLabel, block, state) {
         fontWeight: '700',
         border: `1px solid ${getBadgeBorderColor(block, state)}`,
         borderRadius: '999px'
-      },
-      after: {
-        contentText: getBlockSummaryText(block, state),
-        color: getSummaryColor(block, state),
-        margin: '0 0 0 12px',
-        fontStyle: 'italic'
       }
     }
   }
@@ -3327,6 +3637,42 @@ function createReviewPanelUnavailableHtml() {
   <div class="card">
     <h2>This review block is no longer available</h2>
       <p class="muted">It was likely accepted, rejected, or replaced by a newer diff. Open another block from the editor or Code Block Review view.</p>
+  </div>
+</body>
+</html>`
+}
+
+function createReviewPanelLoadingHtml(previewData) {
+  const label = previewData?.label ?? 'Preparing review panel...'
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #10141b;
+      color: #edf2f7;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .card {
+      max-width: 680px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .muted {
+      color: #99a2b3;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Loading review panel...</h2>
+    <p class="muted">${escapeHtml(label)}</p>
   </div>
 </body>
 </html>`
