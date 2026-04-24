@@ -108,130 +108,158 @@
         }
       ]
     },
-    "configuration": {
-      "title": "Code Block Review",
-      "properties": {
-        "codexReview.ignoredFileGlobs": {
-          "type": "array",
-          "default": [
-            "**/pnpm-lock.yaml",
-            "**/package-lock.json",
-            "**/yarn.lock"
-          ],
-          "items": {
-            "type": "string"
+    "configuration": [
+      {
+        "title": "Code Block Review",
+        "type": "object",
+        "properties": {
+          "codexReview.ignoredFileGlobs": {
+            "type": "array",
+            "default": [
+              "**/pnpm-lock.yaml",
+              "**/package-lock.json",
+              "**/yarn.lock"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Glob-like file patterns to ignore entirely in Code Block Review. Ignored files do not enter auto/manual baselines, do not start capture, and do not appear in review lists. Examples: `pnpm-lock.yaml`, `**/pnpm-lock.yaml`, `**/*.snap`. Recommended for lockfiles, snapshots, generated files, and vendored assets. / 在 Code Block Review 中完全忽略的文件模式。被忽略的文件不会进入自动/手动 baseline，不会触发 capture，也不会出现在 review 列表里。示例：`pnpm-lock.yaml`、`**/pnpm-lock.yaml`、`**/*.snap`。建议用于 lockfile、快照文件、生成文件和外部产物。"
+          }
+        }
+      },
+      {
+        "title": "Code Block Review: Diagnostics",
+        "type": "object",
+        "properties": {
+          "codexReview.profiler.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable Code Block Review profiler logging in the Output Channel. Keep disabled during normal use to avoid extra logging overhead. / 启用 Code Block Review 在 Output Channel 中输出 profiler 日志。日常使用建议关闭，避免额外日志开销。"
+          }
+        }
+      },
+      {
+        "title": "Code Block Review: Auto Capture",
+        "type": "object",
+        "properties": {
+          "codexReview.autoCapture.enabled": {
+            "type": "boolean",
+            "order": 1,
+            "default": true,
+            "description": "Enable always-on automatic review capture while no session is active. Auto mode continuously watches for short bursts of large or bulk edits and never overrides an active manual session. Recommended default: enabled unless you only want manual review sessions. / 启用常驻自动捕获模式。在没有活动会话时，自动模式会持续监测短时间内的大改动或批量改动，并且不会覆盖手动启动的会话。推荐默认开启；只有在你只想手动进入 review 时再关闭。"
           },
-          "description": "Glob-like file patterns to ignore entirely in Code Block Review. Ignored files do not enter auto/manual baselines, do not start capture, and do not appear in review lists. Examples: `pnpm-lock.yaml`, `**/pnpm-lock.yaml`, `**/*.snap`. Recommended for lockfiles, snapshots, generated files, and vendored assets. / 在 Code Block Review 中完全忽略的文件模式。被忽略的文件不会进入自动/手动 baseline，不会触发 capture，也不会出现在 review 列表里。示例：`pnpm-lock.yaml`、`**/pnpm-lock.yaml`、`**/*.snap`。建议用于 lockfile、快照文件、生成文件和外部产物。"
-        },
-        "codexReview.profiler.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable Code Block Review profiler logging in the Output Channel. Keep disabled during normal use to avoid extra logging overhead. / 启用 Code Block Review 在 Output Channel 中输出 profiler 日志。日常使用建议关闭，避免额外日志开销。"
-        },
-        "codexReview.autoCapture.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable always-on automatic review capture while no session is active. Auto mode continuously watches for short bursts of large or bulk edits and never overrides an active manual session. Recommended default: enabled unless you only want manual review sessions. / 启用常驻自动捕获模式。在没有活动会话时，自动模式会持续监测短时间内的大改动或批量改动，并且不会覆盖手动启动的会话。推荐默认开启；只有在你只想手动进入 review 时再关闭。"
-        },
-        "codexReview.autoCapture.triggerEvents": {
-          "type": "array",
-          "default": [
-            "windowFocus",
-            "activeEditorChange"
-          ],
-          "items": {
-            "type": "string",
-            "enum": [
+          "codexReview.autoCapture.triggerEvents": {
+            "type": "array",
+            "order": 2,
+            "default": [
               "windowFocus",
               "activeEditorChange"
             ],
-            "enumDescriptions": [
-              "Refresh the background auto-capture baseline when the VS Code window regains focus. / 当 VS Code 窗口重新获得焦点时，刷新后台自动捕获使用的 baseline。",
-              "Refresh the background auto-capture baseline when the active code editor changes. / 当当前活动代码编辑器发生变化时，刷新后台自动捕获使用的 baseline。"
-            ]
+            "items": {
+              "type": "string",
+              "enum": [
+                "windowFocus",
+                "activeEditorChange"
+              ],
+              "enumDescriptions": [
+                "Refresh the background auto-capture baseline when the VS Code window regains focus. / 当 VS Code 窗口重新获得焦点时，刷新后台自动捕获使用的 baseline。",
+                "Refresh the background auto-capture baseline when the active code editor changes. / 当当前活动代码编辑器发生变化时，刷新后台自动捕获使用的 baseline。"
+              ]
+            },
+            "uniqueItems": true,
+            "description": "Choose which supported editor events refresh the always-on auto-capture baseline while auto mode is enabled. Recommended default: keep both. If you feel baseline refresh is too frequent, remove `activeEditorChange` first. / 选择哪些编辑器事件会在自动模式开启时刷新常驻自动捕获使用的 baseline。推荐默认保留两个；如果觉得刷新过于频繁，可以先去掉 `activeEditorChange`。"
           },
-          "uniqueItems": true,
-          "description": "Choose which supported editor events refresh the always-on auto-capture baseline while auto mode is enabled. Recommended default: keep both. If you feel baseline refresh is too frequent, remove `activeEditorChange` first. / 选择哪些编辑器事件会在自动模式开启时刷新常驻自动捕获使用的 baseline。推荐默认保留两个；如果觉得刷新过于频繁，可以先去掉 `activeEditorChange`。"
-        },
-        "codexReview.autoCapture.baselineRefreshCooldownSeconds": {
-          "type": "number",
-          "default": 10,
-          "minimum": 0,
-          "maximum": 3600,
-          "description": "Minimum cooldown between auto-capture baseline refreshes triggered by focus/editor-change events once a baseline already exists. `0` disables throttling. Recommended default: `10`. If you still see frequent refreshes, try `15-30`. / 在自动捕获已经有 baseline 的情况下，由窗口聚焦或编辑器切换触发的 baseline 刷新最小冷却时间。`0` 表示关闭节流。推荐默认值：`10`；如果仍觉得频繁，可尝试 `15-30`。"
-        },
-        "codexReview.autoCapture.captureIdleSeconds": {
-          "type": "number",
-          "default": 4,
-          "minimum": 1,
-          "maximum": 600,
-          "description": "How long an automatic capture session waits without new edits before it stops actively recording and offers you a manual review window. Balanced default: `4`. More responsive: `2-3`. More conservative for long AI runs: `6-10`. / 自动捕获会话在没有新改动后等待多久，才会停止继续记录，并进入一个可手动 review 的等待窗口。平衡推荐值：`4`。想更快进入 Ready：`2-3`。想对长时间 AI 改动更保守：`6-10`。"
-        },
-        "codexReview.autoCapture.reviewOfferSeconds": {
-          "type": "number",
-          "default": 60,
-          "minimum": 1,
-          "maximum": 600,
-          "description": "After automatic capture goes idle, how long Code Block Review waits for you to manually open review before silently syncing the current workspace into the baseline and leaving capture mode. Recommended default: `60`. Shorter values dismiss faster; longer values keep the Ready state around longer. / 自动捕获进入空闲后，Code Block Review 会等待多久让你手动进入 review；如果超时未进入，就会静默把当前工作区同步进 baseline 并退出 capture 阶段。推荐默认值：`60`。更小会更快自动跳过，更大则会让 Ready 状态停留更久。"
-        },
-        "codexReview.autoCapture.observationWindowSeconds": {
-          "type": "number",
-          "default": 1.2,
-          "minimum": 0.1,
-          "maximum": 60,
-          "description": "How long the auto-capture heuristic observes early edits before deciding whether they look like AI/external bulk edits. A longer window gives later edits more time to join the same burst; a shorter window decides sooner. / 自动捕获在做出判断前，观察首波改动行为的时间窗口；用于判断这些改动是否更像 AI/外部批量写入。窗口更长时，后续改动更容易并入同一波 burst；窗口更短时，系统会更早做出判断。"
-        },
-        "codexReview.autoCapture.burstEventWindowMilliseconds": {
-          "type": "number",
-          "default": 500,
-          "minimum": 50,
-          "maximum": 10000,
-          "description": "A short event-density window used as an assist signal for machine-like edit speed. It does not trigger capture by itself; instead, high event density can slightly relax multi-file or burst-line thresholds inside the same observation window. / 一个用于检测“机器式高频编辑速度”的超短事件窗口。它本身不会单独触发 capture，而是作为辅助信号，在同一观察窗口内适度放宽多文件或 burst 行数阈值。"
-        },
-        "codexReview.autoCapture.largeChangeLines": {
-          "type": "number",
-          "default": 8,
-          "minimum": 1,
-          "maximum": 10000,
-          "description": "A single edit touching at least this many lines is treated as a strong AI/external signal. Balanced default: `8`. Aggressive capture: `4-6`. Conservative capture: `12-20`. Lower values trigger more easily. / 单次改动触达至少这么多行时，会被视为更强的 AI/外部写入信号。平衡推荐值：`8`。更激进：`4-6`。更保守：`12-20`。值越小越容易触发。"
-        },
-        "codexReview.autoCapture.largeChangeChars": {
-          "type": "number",
-          "default": 200,
-          "minimum": 1,
-          "maximum": 1000000,
-          "description": "A single edit changing at least this many characters is treated as a strong AI/external signal. Balanced default: `120`. Aggressive capture: `60-100`. Conservative capture: `180-300`. Lower values trigger more easily. / 单次改动变更至少这么多字符时，会被视为更强的 AI/外部写入信号。平衡推荐值：`120`。更激进：`60-100`。更保守：`180-300`。值越小越容易触发。"
-        },
-        "codexReview.autoCapture.multiFileMinFiles": {
-          "type": "number",
-          "default": 2,
-          "minimum": 1,
-          "maximum": 1000,
-          "description": "If early edits touch at least this many files within the observation window, they are more likely to be treated as AI/external edits. Balanced default: `2`. Aggressive capture: keep `2`. Conservative capture: `3`. / 如果观察窗口内的早期改动触达至少这么多个文件，就更倾向于判定为 AI/外部写入。平衡推荐值：`2`。更激进：保持 `2`。更保守：`3`。"
-        },
-        "codexReview.autoCapture.multiFileMinLines": {
-          "type": "number",
-          "default": 8,
-          "minimum": 1,
-          "maximum": 100000,
-          "description": "When multiple files are touched, the combined changed-line count must reach this threshold before auto-capture starts. Balanced default: `4`. Aggressive capture: `2-3`. Conservative capture: `8-12`. / 在多文件同时改动时，累计改动行数至少达到这个阈值，自动捕获才会真正开始。平衡推荐值：`4`。更激进：`2-3`。更保守：`8-12`。"
-        },
-        "codexReview.autoCapture.burstMinEvents": {
-          "type": "number",
-          "default": 10,
-          "minimum": 1,
-          "maximum": 10000,
-          "description": "How many edit events inside the short burst-event window are treated as a strong rapid-edit assist signal. This no longer triggers capture by itself; it only helps relax nearby multi-file or burst-line thresholds. The default `10` within `500ms` aims to stay above normal typing speed. / 在超短 burst 事件窗口内，至少需要多少次编辑事件，才会被视为强烈的高频编辑辅助信号。它不再单独触发 capture，只会用来适度放宽临近的多文件或 burst 行数阈值。默认是 `500ms` 内 `10` 次，目标是高于普通手动输入速度。"
-        },
-        "codexReview.autoCapture.burstMinLines": {
-          "type": "number",
-          "default": 18,
-          "minimum": 1,
-          "maximum": 100000,
-          "description": "How many unique touched lines within the observation window a burst needs before auto-capture starts. Repeated edits on the same line are merged instead of being counted again. Balanced default: `10`. Aggressive capture: `5-8`. Conservative capture: `15-25`. / 在观察窗口内，一次 burst 至少需要触达多少唯一行，自动捕获才会真正开始。同一行上的重复编辑会先合并，不会被重复累计。平衡推荐值：`10`。更激进：`5-8`。更保守：`15-25`。"
+          "codexReview.autoCapture.baselineRefreshCooldownSeconds": {
+            "type": "number",
+            "order": 3,
+            "default": 10,
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "Minimum cooldown between auto-capture baseline refreshes triggered by focus/editor-change events once a baseline already exists. `0` disables throttling. Recommended default: `10`. If you still see frequent refreshes, try `15-30`. / 在自动捕获已经有 baseline 的情况下，由窗口聚焦或编辑器切换触发的 baseline 刷新最小冷却时间。`0` 表示关闭节流。推荐默认值：`10`；如果仍觉得频繁，可尝试 `15-30`。"
+          },
+          "codexReview.autoCapture.captureIdleSeconds": {
+            "type": "number",
+            "order": 4,
+            "default": 4,
+            "minimum": 1,
+            "maximum": 600,
+            "description": "How long an automatic capture session waits without new edits before it stops actively recording and offers you a manual review window. Balanced default: `4`. More responsive: `2-3`. More conservative for long AI runs: `6-10`. / 自动捕获会话在没有新改动后等待多久，才会停止继续记录，并进入一个可手动 review 的等待窗口。平衡推荐值：`4`。想更快进入 Ready：`2-3`。想对长时间 AI 改动更保守：`6-10`。"
+          },
+          "codexReview.autoCapture.reviewOfferSeconds": {
+            "type": "number",
+            "order": 5,
+            "default": 60,
+            "minimum": 1,
+            "maximum": 600,
+            "description": "After automatic capture goes idle, how long Code Block Review waits for you to manually open review before silently syncing the current workspace into the baseline and leaving capture mode. Recommended default: `60`. Shorter values dismiss faster; longer values keep the Ready state around longer. / 自动捕获进入空闲后，Code Block Review 会等待多久让你手动进入 review；如果超时未进入，就会静默把当前工作区同步进 baseline 并退出 capture 阶段。推荐默认值：`60`。更小会更快自动跳过，更大则会让 Ready 状态停留更久。"
+          },
+          "codexReview.autoCapture.observationWindowSeconds": {
+            "type": "number",
+            "order": 6,
+            "default": 1.2,
+            "minimum": 0.1,
+            "maximum": 60,
+            "description": "How long the auto-capture heuristic observes early edits before deciding whether they look like AI/external bulk edits. A longer window gives later edits more time to join the same burst; a shorter window decides sooner. / 自动捕获在做出判断前，观察首波改动行为的时间窗口；用于判断这些改动是否更像 AI/外部批量写入。窗口更长时，后续改动更容易并入同一波 burst；窗口更短时，系统会更早做出判断。"
+          },
+          "codexReview.autoCapture.burstEventWindowMilliseconds": {
+            "type": "number",
+            "order": 7,
+            "default": 500,
+            "minimum": 50,
+            "maximum": 10000,
+            "description": "A short event-density window used as an assist signal for machine-like edit speed. It does not trigger capture by itself; instead, high event density can slightly relax multi-file or burst-line thresholds inside the same observation window. / 一个用于检测“机器式高频编辑速度”的超短事件窗口。它本身不会单独触发 capture，而是作为辅助信号，在同一观察窗口内适度放宽多文件或 burst 行数阈值。"
+          },
+          "codexReview.autoCapture.largeChangeLines": {
+            "type": "number",
+            "order": 8,
+            "default": 8,
+            "minimum": 1,
+            "maximum": 10000,
+            "description": "A single edit touching at least this many lines is treated as a strong AI/external signal. Balanced default: `8`. Aggressive capture: `4-6`. Conservative capture: `12-20`. Lower values trigger more easily. / 单次改动触达至少这么多行时，会被视为更强的 AI/外部写入信号。平衡推荐值：`8`。更激进：`4-6`。更保守：`12-20`。值越小越容易触发。"
+          },
+          "codexReview.autoCapture.largeChangeChars": {
+            "type": "number",
+            "order": 9,
+            "default": 200,
+            "minimum": 1,
+            "maximum": 1000000,
+            "description": "A single edit changing at least this many characters is treated as a strong AI/external signal. Balanced default: `120`. Aggressive capture: `60-100`. Conservative capture: `180-300`. Lower values trigger more easily. / 单次改动变更至少这么多字符时，会被视为更强的 AI/外部写入信号。平衡推荐值：`120`。更激进：`60-100`。更保守：`180-300`。值越小越容易触发。"
+          },
+          "codexReview.autoCapture.multiFileMinFiles": {
+            "type": "number",
+            "order": 10,
+            "default": 2,
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "If early edits touch at least this many files within the observation window, they are more likely to be treated as AI/external edits. Balanced default: `2`. Aggressive capture: keep `2`. Conservative capture: `3`. / 如果观察窗口内的早期改动触达至少这么多个文件，就更倾向于判定为 AI/外部写入。平衡推荐值：`2`。更激进：保持 `2`。更保守：`3`。"
+          },
+          "codexReview.autoCapture.multiFileMinLines": {
+            "type": "number",
+            "order": 11,
+            "default": 8,
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "When multiple files are touched, the combined changed-line count must reach this threshold before auto-capture starts. Balanced default: `4`. Aggressive capture: `2-3`. Conservative capture: `8-12`. / 在多文件同时改动时，累计改动行数至少达到这个阈值，自动捕获才会真正开始。平衡推荐值：`4`。更激进：`2-3`。更保守：`8-12`。"
+          },
+          "codexReview.autoCapture.burstMinEvents": {
+            "type": "number",
+            "order": 12,
+            "default": 10,
+            "minimum": 1,
+            "maximum": 10000,
+            "description": "How many edit events inside the short burst-event window are treated as a strong rapid-edit assist signal. This no longer triggers capture by itself; it only helps relax nearby multi-file or burst-line thresholds. The default `10` within `500ms` aims to stay above normal typing speed. / 在超短 burst 事件窗口内，至少需要多少次编辑事件，才会被视为强烈的高频编辑辅助信号。它不再单独触发 capture，只会用来适度放宽临近的多文件或 burst 行数阈值。默认是 `500ms` 内 `10` 次，目标是高于普通手动输入速度。"
+          },
+          "codexReview.autoCapture.burstMinLines": {
+            "type": "number",
+            "order": 13,
+            "default": 18,
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "How many unique touched lines within the observation window a burst needs before auto-capture starts. Repeated edits on the same line are merged instead of being counted again. Balanced default: `10`. Aggressive capture: `5-8`. Conservative capture: `15-25`. / 在观察窗口内，一次 burst 至少需要触达多少唯一行，自动捕获才会真正开始。同一行上的重复编辑会先合并，不会被重复累计。平衡推荐值：`10`。更激进：`5-8`。更保守：`15-25`。"
+          }
         }
       }
-    },
+    ],
     "menus": {
       "view/title": [
         {
