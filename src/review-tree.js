@@ -22,6 +22,11 @@ class ReviewTreeProvider {
   }
 
   getTreeItem(element) {
+    if (element instanceof FileItem) {
+      const file = this.controller.session?.reviewFiles.get(element.uri.toString())
+      return file ? new FileItem(file) : element
+    }
+
     return element
   }
 
@@ -39,7 +44,8 @@ class ReviewTreeProvider {
     }
 
     if (element instanceof FileItem) {
-      return element.file.blocks.map((block) => new BlockItem(element.file, block))
+      const file = this.controller.session?.reviewFiles.get(element.uri.toString())
+      return file ? file.blocks.map((block) => new BlockItem(file, block)) : []
     }
 
     const files = this.controller.getFiles()
@@ -72,7 +78,18 @@ class ReviewBlockCodeLensProvider {
       return []
     }
 
-    const file = this.controller.session.reviewFiles.get(document.uri.toString())
+    let file = this.controller.session.reviewFiles.get(document.uri.toString())
+    let blocks = file?.blocks ?? []
+    let isDeletedFilePreview = false
+    const deletedFilePreviewBlock = !file && typeof this.controller.findDeletedFilePreviewBlock === 'function'
+      ? this.controller.findDeletedFilePreviewBlock(document.uri)
+      : null
+    if (deletedFilePreviewBlock) {
+      file = this.controller.session.reviewFiles.get(deletedFilePreviewBlock.uri.toString())
+      blocks = deletedFilePreviewBlock.block ? [deletedFilePreviewBlock.block] : []
+      isDeletedFilePreview = true
+    }
+
     if (!file) {
       return []
     }
@@ -82,12 +99,12 @@ class ReviewBlockCodeLensProvider {
       pendingItems.map((item, index) => [getReviewItemKey(item), index])
     )
     const codeLenses = []
-    for (const block of file.blocks) {
+    for (const block of blocks) {
       if (block.status !== 'pending') {
         continue
       }
 
-      const range = getBottomActionCodeLensRange(document, block)
+      const range = getBottomActionCodeLensRange(document, block, { isDeletedFilePreview })
       if (!range) {
         continue
       }

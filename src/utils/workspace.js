@@ -1,4 +1,5 @@
 const vscode = require('vscode')
+const path = require('path')
 
 const {
   hashText,
@@ -26,6 +27,70 @@ function getWorkspaceBaselineKey() {
 function getWorkspaceKeyForUri(uri) {
   const folder = uri ? vscode.workspace.getWorkspaceFolder(uri) : null
   return folder?.uri.toString() ?? null
+}
+
+function getActiveWorkspaceFolder() {
+  const editor = vscode.window.activeTextEditor
+  if (!editor) {
+    return null
+  }
+
+  return vscode.workspace.getWorkspaceFolder(editor.document.uri)
+}
+
+async function findNearestProjectRoot(uri, markers) {
+  if (!uri || uri.scheme !== 'file') {
+    return null
+  }
+
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri)
+  if (!workspaceFolder || workspaceFolder.uri.scheme !== 'file') {
+    return null
+  }
+
+  const markerNames = Array.isArray(markers)
+    ? markers.filter((marker) => typeof marker === 'string' && marker.trim().length > 0)
+    : []
+  if (markerNames.length === 0) {
+    return workspaceFolder.uri
+  }
+
+  let currentDirectory = path.dirname(uri.fsPath)
+  const workspaceRoot = workspaceFolder.uri.fsPath
+
+  while (isPathInsideOrEqual(currentDirectory, workspaceRoot)) {
+    if (await directoryHasAnyMarker(currentDirectory, markerNames)) {
+      return vscode.Uri.file(currentDirectory)
+    }
+
+    if (currentDirectory === workspaceRoot) {
+      break
+    }
+
+    const parentDirectory = path.dirname(currentDirectory)
+    if (parentDirectory === currentDirectory) {
+      break
+    }
+    currentDirectory = parentDirectory
+  }
+
+  return workspaceFolder.uri
+}
+
+async function directoryHasAnyMarker(directory, markers) {
+  for (const marker of markers) {
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(path.join(directory, marker)))
+      return true
+    } catch {}
+  }
+
+  return false
+}
+
+function isPathInsideOrEqual(candidatePath, rootPath) {
+  const relative = path.relative(rootPath, candidatePath)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
 function isGitMetadataUri(uri) {
@@ -100,6 +165,8 @@ module.exports = {
   WORKSPACE_EXCLUDE_GLOB,
   WORKSPACE_INCLUDE_GLOB,
   buildWorkspaceScanCandidates,
+  findNearestProjectRoot,
+  getActiveWorkspaceFolder,
   getWorkspaceBaselineKey,
   getWorkspaceKeyForUri,
   isGitMetadataUri,

@@ -19,6 +19,7 @@ const {
   getCurrentTrackedText,
   getReviewBlockKey,
   getReviewItemKey,
+  hashText,
   isTrackableDocument,
   isTrackableUri,
   isUndoOrRedoChange,
@@ -59,6 +60,8 @@ const {
   WORKSPACE_EXCLUDE_GLOB,
   WORKSPACE_INCLUDE_GLOB,
   buildWorkspaceScanCandidates,
+  findNearestProjectRoot,
+  getActiveWorkspaceFolder,
   getWorkspaceBaselineKey,
   getWorkspaceKeyForUri,
   isGitMetadataUri,
@@ -102,6 +105,8 @@ class ReviewController {
     this.cachedPendingCount = 0
     this.profiler = new ReviewProfiler()
     this.lastAutoCaptureBaselineRefreshAt = 0
+    this.autoCaptureBaselineStatus = 'idle'
+    this.autoCaptureBaselineStatusMessage = ''
     this.dirtyWorkspaceUris = new Set()
     this.recentGitActivityByWorkspaceKey = new Map()
     this.autoCaptureBaselineWorkspaceKey = getWorkspaceBaselineKey()
@@ -110,6 +115,7 @@ class ReviewController {
     this.autoCaptureCandidateBaselineByUri = new Map()
     this.autoCaptureEvidence = []
     this.autoCaptureFilesystemProbeUris = new Set()
+    this.recentSaveEventsByUri = new Map()
     this.autoCaptureReviewPending = false
     this.autoCaptureReviewPromptNonce = 0
     this.autoCaptureSettings = getAutoCaptureSettings()
@@ -143,12 +149,19 @@ class ReviewController {
       vscode.languages.registerCodeLensProvider(
         [
           { scheme: 'file' },
-          { scheme: 'untitled' }
+          { scheme: 'untitled' },
+          { scheme: DELETED_FILE_PREVIEW_SCHEME }
         ],
         this.blockActionProvider
       ),
       vscode.workspace.onDidChangeTextDocument((event) => {
         void this.handleDocumentChange(event)
+      }),
+      vscode.workspace.onWillSaveTextDocument((event) => {
+        this.noteDocumentSaveEvent(event.document)
+      }),
+      vscode.workspace.onDidSaveTextDocument((document) => {
+        this.noteDocumentSaveEvent(document)
       }),
       vscode.workspace.onDidDeleteFiles((event) => {
         void this.handleWorkspaceFilesDeleted(event)
@@ -394,6 +407,96 @@ class ReviewController {
     return this.workspaceFileListPromise
   }
 
+  async listAutoCaptureBaselineFiles() {
+    if (this.autoCaptureSettings.scope === 'workspace') {
+      return this.listTrackableWorkspaceFiles()
+    }
+
+    const roots = await this.getAutoCaptureBaselineScopeRoots()
+    if (roots.length === 0) {
+      return this.listTrackableWorkspaceFiles()
+    }
+
+    return this.listTrackableWorkspaceFilesForRoots(roots)
+  }
+
+  async getAutoCaptureBaselineScopeRoots() {
+    const rootsByKey = new Map()
+    const activeRoot = await this.getActiveProjectRoot()
+    if (activeRoot) {
+      rootsByKey.set(activeRoot.toString(), activeRoot)
+    }
+
+    if (this.autoCaptureSettings.scope === 'touchedProjects') {
+      for (const entry of this.autoCaptureEvidence) {
+        const root = await this.getProjectRootForUriString(entry.uri)
+        if (root) {
+          rootsByKey.set(root.toString(), root)
+        }
+      }
+
+      for (const uriString of this.autoCaptureFilesystemProbeUris) {
+        const root = await this.getProjectRootForUriString(uriString)
+        if (root) {
+          rootsByKey.set(root.toString(), root)
+        }
+      }
+    }
+
+    return [...rootsByKey.values()]
+  }
+
+  async getActiveProjectRoot() {
+    const editor = vscode.window.activeTextEditor
+    if (editor?.document?.uri) {
+      const projectRoot = await this.getProjectRootForUri(editor.document.uri)
+      if (projectRoot) {
+        return projectRoot
+      }
+    }
+
+    const activeWorkspaceFolder = getActiveWorkspaceFolder()
+    return activeWorkspaceFolder?.uri ?? null
+  }
+
+  async getProjectRootForUriString(uriString) {
+    try {
+      return this.getProjectRootForUri(vscode.Uri.parse(uriString))
+    } catch {
+      return null
+    }
+  }
+
+  async getProjectRootForUri(uri) {
+    const nearestRoot = await findNearestProjectRoot(uri, this.autoCaptureSettings.projectRootMarkers)
+    if (nearestRoot) {
+      return nearestRoot
+    }
+
+    return vscode.workspace.getWorkspaceFolder(uri)?.uri ?? null
+  }
+
+  async listTrackableWorkspaceFilesForRoots(roots) {
+    const filesByKey = new Map()
+
+    for (const root of roots) {
+      if (!root || root.scheme !== 'file') {
+        continue
+      }
+
+      const files = filterTrackableUris(await vscode.workspace.findFiles(
+        new vscode.RelativePattern(root.fsPath, WORKSPACE_INCLUDE_GLOB),
+        WORKSPACE_EXCLUDE_GLOB
+      ))
+
+      for (const uri of files) {
+        filesByKey.set(uri.toString(), uri)
+      }
+    }
+
+    return [...filesByKey.values()]
+  }
+
   markRecentGitActivity(uri) {
     const workspaceKey = getWorkspaceKeyForUri(uri)
     if (!workspaceKey) {
@@ -427,6 +530,29 @@ class ReviewController {
       } catch {}
     }
 
+    return false
+  }
+
+  noteDocumentSaveEvent(document) {
+    if (!document || !isTrackableDocument(document)) {
+      return
+    }
+
+    this.recentSaveEventsByUri.set(document.uri.toString(), Date.now())
+  }
+
+  hasRecentSaveEvent(uriString) {
+    const lastSavedAt = this.recentSaveEventsByUri.get(uriString) ?? 0
+    if (lastSavedAt <= 0) {
+      return false
+    }
+
+    const windowMs = this.autoCaptureSettings.observationWindowMs ?? 1200
+    if ((Date.now() - lastSavedAt) <= windowMs) {
+      return true
+    }
+
+    this.recentSaveEventsByUri.delete(uriString)
     return false
   }
 
@@ -535,7 +661,8 @@ class ReviewController {
     const snapshotPath = await this.persistAutoCaptureBaselineText(uriString, text)
     this.autoCaptureBaselineEntriesByUri.set(uriString, {
       kind: 'snapshot',
-      snapshotPath
+      snapshotPath,
+      contentHash: hashText(text)
     })
   }
 
@@ -570,28 +697,61 @@ class ReviewController {
       return this.autoCaptureBaselineRefreshPromise
     }
 
+    this.autoCaptureBaselineStatus = 'syncing'
+    this.autoCaptureBaselineStatusMessage = 'Syncing auto-capture baseline...'
+    this.updateStatusBar()
+
     this.autoCaptureBaselineRefreshPromise = (async () => {
       const profile = this.profiler.startMark('refreshAutoCaptureBaseline')
       const nextEntriesByUri = new Map()
-      const previousSnapshotDirectory = this.autoCaptureBaselineSnapshotDirectory
-      this.autoCaptureBaselineSnapshotDirectory = null
+      let reusedCount = 0
+      let updatedCount = 0
 
       try {
         for (const document of vscode.workspace.textDocuments) {
           if (isTrackableDocument(document)) {
             const uriString = document.uri.toString()
-            const snapshotPath = await this.persistAutoCaptureBaselineText(uriString, document.getText())
+            const text = document.getText()
+            const contentHash = hashText(text)
+            const previousEntry = this.autoCaptureBaselineEntriesByUri.get(uriString)
+            if (
+              previousEntry?.kind === 'snapshot' &&
+              previousEntry.contentHash === contentHash &&
+              previousEntry.snapshotPath
+            ) {
+              nextEntriesByUri.set(uriString, previousEntry)
+              reusedCount += 1
+              continue
+            }
+
+            const snapshotPath = await this.persistAutoCaptureBaselineText(uriString, text)
             nextEntriesByUri.set(uriString, {
               kind: 'snapshot',
-              snapshotPath
+              snapshotPath,
+              contentHash
             })
+            updatedCount += 1
           }
         }
 
-        const workspaceFiles = await this.listTrackableWorkspaceFiles()
+        const workspaceFiles = await this.listAutoCaptureBaselineFiles()
         for (const uri of workspaceFiles) {
           const key = uri.toString()
           if (nextEntriesByUri.has(key)) {
+            continue
+          }
+
+          const previousEntry = this.autoCaptureBaselineEntriesByUri.get(key)
+          const fileStat = await this.getBaselineFileStat(uri)
+          if (
+            previousEntry?.kind === 'snapshot' &&
+            fileStat &&
+            previousEntry.mtime === fileStat.mtime &&
+            previousEntry.size === fileStat.size &&
+            previousEntry.snapshotPath
+          ) {
+            nextEntriesByUri.set(key, previousEntry)
+            reusedCount += 1
             continue
           }
 
@@ -600,29 +760,58 @@ class ReviewController {
             const snapshotPath = await this.persistAutoCaptureBaselineText(key, text)
             nextEntriesByUri.set(key, {
               kind: 'snapshot',
-              snapshotPath
+              snapshotPath,
+              contentHash: hashText(text),
+              mtime: fileStat?.mtime,
+              size: fileStat?.size
             })
+            updatedCount += 1
           }
         }
 
         this.autoCaptureBaselineEntriesByUri = nextEntriesByUri
         this.lastAutoCaptureBaselineRefreshAt = Date.now()
+        this.autoCaptureBaselineStatus = 'ready'
+        this.autoCaptureBaselineStatusMessage =
+          `Baseline ready with ${nextEntriesByUri.size} files (${reusedCount} reused, ${updatedCount} updated)`
+      } catch (error) {
+        this.autoCaptureBaselineStatus = 'failed'
+        this.autoCaptureBaselineStatusMessage = error?.message
+          ? `Baseline sync failed: ${error.message}`
+          : 'Baseline sync failed'
+        throw error
       } finally {
-        if (previousSnapshotDirectory) {
-          await cleanupSnapshotDirectory(previousSnapshotDirectory)
-        }
         this.profiler.finishMark(profile, {
           fileCount: nextEntriesByUri.size,
           baselineEntryCount: this.autoCaptureBaselineEntriesByUri.size,
           candidateCount: this.autoCaptureCandidateBaselineByUri.size,
-          snapshotDir: this.autoCaptureBaselineSnapshotDirectory ? 'ready' : 'missing'
+          snapshotDir: this.autoCaptureBaselineSnapshotDirectory ? 'ready' : 'missing',
+          reusedCount,
+          updatedCount
         })
       }
     })().finally(() => {
       this.autoCaptureBaselineRefreshPromise = null
+      this.updateStatusBar()
     })
 
     return this.autoCaptureBaselineRefreshPromise
+  }
+
+  async getBaselineFileStat(uri) {
+    if (!uri || uri.scheme !== 'file') {
+      return null
+    }
+
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      return {
+        mtime: stat.mtime,
+        size: stat.size
+      }
+    } catch {
+      return null
+    }
   }
 
   resetAutoCaptureArmedState() {
@@ -635,6 +824,8 @@ class ReviewController {
     this.autoCaptureReviewPending = false
     this.autoCaptureReviewPromptNonce += 1
     this.lastAutoCaptureBaselineRefreshAt = 0
+    this.autoCaptureBaselineStatus = 'idle'
+    this.autoCaptureBaselineStatusMessage = ''
     void this.cleanupAutoCaptureBaselineSnapshots()
     this.profiler.logSnapshot('resetAutoCaptureArmedState', {
       baselineEntryCount: this.autoCaptureBaselineEntriesByUri.size,
@@ -733,6 +924,19 @@ class ReviewController {
         void this.handleAutoCaptureIdleReached()
       }
     }, this.autoCaptureSettings.captureIdleMs)
+  }
+
+  noteAutoCaptureActivity() {
+    if (this.sessionMode !== 'auto' || this.state !== 'capturing') {
+      return
+    }
+
+    if (this.autoCaptureReviewPending) {
+      this.autoCaptureReviewPending = false
+      this.clearAutoReviewOfferTimer()
+      this.autoCaptureReviewPromptNonce += 1
+    }
+    this.bumpAutoCaptureStopTimer()
   }
 
   scheduleAutoReviewOfferTimer() {
@@ -912,20 +1116,26 @@ class ReviewController {
     }
 
     const touchedUris = new Set(this.autoCaptureEvidence.map((entry) => entry.uri))
+    let updatedCount = 0
+    let removedCount = 0
     for (const uriString of touchedUris) {
       const uri = vscode.Uri.parse(uriString)
       const existsInWorkspace = uri.scheme !== 'file' || (await uriExists(uri))
       const currentText = await getCurrentTrackedText(uri, existsInWorkspace)
       if (currentText === null) {
         this.deleteAutoCaptureIdleBaseline(uriString)
+        removedCount += 1
         continue
       }
 
       await this.setAutoCaptureIdleBaselineText(uriString, currentText)
+      updatedCount += 1
     }
 
     this.autoCaptureCandidateBaselineByUri = new Map()
     this.autoCaptureEvidence = []
+    this.autoCaptureBaselineStatus = 'ready'
+    this.autoCaptureBaselineStatusMessage = this.formatIncrementalBaselineStatusMessage(updatedCount, removedCount)
   }
 
   async absorbCurrentDocumentIntoAutoBaseline(document) {
@@ -936,6 +1146,21 @@ class ReviewController {
     const uriString = document.uri.toString()
     await this.setAutoCaptureIdleBaselineText(uriString, document.getText())
     this.autoCaptureCandidateBaselineByUri.delete(uriString)
+    this.autoCaptureBaselineStatus = 'ready'
+    this.autoCaptureBaselineStatusMessage = this.formatIncrementalBaselineStatusMessage(1, 0)
+  }
+
+  formatIncrementalBaselineStatusMessage(updatedCount, removedCount) {
+    const parts = []
+    if (updatedCount > 0) {
+      parts.push(`${updatedCount} updated`)
+    }
+    if (removedCount > 0) {
+      parts.push(`${removedCount} removed`)
+    }
+
+    const changeSummary = parts.length > 0 ? ` (${parts.join(', ')})` : ''
+    return `Baseline ready with ${this.autoCaptureBaselineEntriesByUri.size} files${changeSummary}`
   }
 
   dropAutoCaptureEvidenceForUri(uriString) {
@@ -975,6 +1200,7 @@ class ReviewController {
 
     if (this.session) {
       this.markWorkspaceUriDirty(uri)
+      this.noteAutoCaptureActivity()
       this.scheduleWorkspaceRescan(`watcher-${kind}`)
       return
     }
@@ -1203,6 +1429,14 @@ class ReviewController {
       return false
     }
 
+    if (this.shouldIgnoreSaveTriggeredFixEvent(event)) {
+      await this.absorbCurrentDocumentIntoAutoBaseline(event.document)
+      this.dropAutoCaptureEvidenceForUri(uriString)
+      this.updateStatusBar()
+      await this.syncContexts()
+      return false
+    }
+
     await this.recordAutoCaptureEvidence(event)
 
     if (this.shouldStartAutoCaptureFromEvidence()) {
@@ -1211,6 +1445,22 @@ class ReviewController {
 
     this.scheduleAutoCaptureObservationTimeout()
     return false
+  }
+
+  shouldIgnoreSaveTriggeredFixEvent(event) {
+    const uriString = event.document.uri.toString()
+    if (!this.hasRecentSaveEvent(uriString)) {
+      return false
+    }
+
+    const summary = summarizeAutoCaptureEvent(event)
+    if (summary.changedLines === 0) {
+      return false
+    }
+
+    return event.contentChanges.length > 1 ||
+      summary.changedLines >= this.autoCaptureSettings.thresholds.largeChangeLines ||
+      summary.changedChars >= this.autoCaptureSettings.thresholds.largeChangeChars
   }
 
   isAutoCaptureReadyForDocumentChange() {
@@ -1564,12 +1814,7 @@ class ReviewController {
     }
 
     if (this.sessionMode === 'auto') {
-      if (this.autoCaptureReviewPending) {
-        this.autoCaptureReviewPending = false
-        this.clearAutoReviewOfferTimer()
-        this.autoCaptureReviewPromptNonce += 1
-      }
-      this.bumpAutoCaptureStopTimer()
+      this.noteAutoCaptureActivity()
     }
 
     this.updateStatusBar()
@@ -1588,6 +1833,7 @@ class ReviewController {
     for (const uri of deletedTrackableUris) {
       this.markWorkspaceUriDirty(uri)
     }
+    this.noteAutoCaptureActivity()
     await this.scanWorkspaceForChanges('delete-event')
     this.treeProvider.refresh()
     this.blockActionProvider.refresh()
@@ -1971,7 +2217,7 @@ class ReviewController {
     return new vscode.Range(new vscode.Position(startLine, 0), document.lineAt(endLine).range.end)
   }
 
-  async openBlock(item) {
+  async openBlock(item, options = {}) {
     const block = this.findBlockItem(item)
     if (!block) {
       return
@@ -1979,7 +2225,11 @@ class ReviewController {
 
     const source = await this.openReviewSourceDocument(block)
     const document = source.document
-    const editor = await vscode.window.showTextDocument(document, { preview: false })
+    const editor = await vscode.window.showTextDocument(document, {
+      viewColumn: options.viewColumn,
+      preview: false,
+      preserveFocus: options.preserveFocus
+    })
     const range = this.getSourceRangeForBlock(document, block.block, source.isDeletedFilePreview)
     if (range) {
       editor.selection = new vscode.Selection(range.start, range.start)
@@ -2172,11 +2422,14 @@ class ReviewController {
   }
 
   async acceptBlockAndAdvance(item) {
+    const deletedPreviewUri = await this.getDeletedFilePreviewUriForItem(item)
+    const sourceViewColumn = this.getVisibleEditorViewColumn(deletedPreviewUri)
     const nextItem = this.getPreferredNextReviewItem(item)
     await this.acceptBlock(item)
+    await this.closeDeletedFilePreviewEditors(deletedPreviewUri)
 
     if (nextItem && this.state === 'reviewing') {
-      await this.openBlock(nextItem)
+      await this.openBlock(nextItem, { viewColumn: sourceViewColumn })
     }
   }
 
@@ -2217,11 +2470,63 @@ class ReviewController {
   }
 
   async rejectBlockAndAdvance(item) {
+    const deletedPreviewUri = await this.getDeletedFilePreviewUriForItem(item)
+    const sourceViewColumn = this.getVisibleEditorViewColumn(deletedPreviewUri)
     const nextItem = this.getPreferredNextReviewItem(item)
     await this.rejectBlock(item)
+    await this.closeDeletedFilePreviewEditors(deletedPreviewUri)
 
     if (nextItem && this.state === 'reviewing') {
-      await this.openBlock(nextItem)
+      await this.openBlock(nextItem, { viewColumn: sourceViewColumn })
+    }
+  }
+
+  async getDeletedFilePreviewUriForItem(item) {
+    const block = this.findBlockItem(item)
+    if (!block || !(await this.shouldUseDeletedFilePreview(block))) {
+      return null
+    }
+
+    return this.createDeletedFilePreviewUri(block)
+  }
+
+  getVisibleEditorViewColumn(uri) {
+    if (!uri) {
+      return undefined
+    }
+
+    const uriString = uri.toString()
+    return vscode.window.visibleTextEditors.find((editor) => (
+      editor.document.uri.toString() === uriString
+    ))?.viewColumn
+  }
+
+  async closeDeletedFilePreviewEditors(uri) {
+    if (!uri || uri.scheme !== DELETED_FILE_PREVIEW_SCHEME) {
+      return
+    }
+
+    const uriString = uri.toString()
+    const tabGroups = vscode.window.tabGroups
+    if (tabGroups?.all && typeof tabGroups.close === 'function') {
+      const tabsToClose = []
+      for (const group of tabGroups.all) {
+        for (const tab of group.tabs) {
+          if (tab.input?.uri?.toString() === uriString) {
+            tabsToClose.push(tab)
+          }
+        }
+      }
+
+      if (tabsToClose.length > 0) {
+        await tabGroups.close(tabsToClose, true)
+        return
+      }
+    }
+
+    const activeEditor = vscode.window.activeTextEditor
+    if (activeEditor?.document?.uri.toString() === uriString) {
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor')
     }
   }
 
@@ -2475,11 +2780,13 @@ class ReviewController {
 
         if (message.type === 'accept') {
           const activeItem = this.reviewPanelState.currentItem
+          const deletedPreviewUri = await this.getDeletedFilePreviewUriForItem(activeItem)
           const nextItem = this.getPreferredNextReviewItem(activeItem)
           if (nextItem) {
             this.reviewPanelState.currentItem = nextItem
           }
           await this.acceptBlock(activeItem)
+          await this.closeDeletedFilePreviewEditors(deletedPreviewUri)
           if (this.reviewPanelState && nextItem) {
             await this.safeRevealReviewBlock(nextItem)
           }
@@ -2489,11 +2796,13 @@ class ReviewController {
 
         if (message.type === 'reject') {
           const activeItem = this.reviewPanelState.currentItem
+          const deletedPreviewUri = await this.getDeletedFilePreviewUriForItem(activeItem)
           const nextItem = this.getPreferredNextReviewItem(activeItem)
           if (nextItem) {
             this.reviewPanelState.currentItem = nextItem
           }
           await this.rejectBlock(activeItem)
+          await this.closeDeletedFilePreviewEditors(deletedPreviewUri)
           if (this.reviewPanelState && nextItem) {
             await this.safeRevealReviewBlock(nextItem)
           }
@@ -2802,9 +3111,12 @@ class ReviewController {
     }
 
     if (this.autoCaptureSettings.enabled && this.autoCaptureState === 'armed') {
-      this.statusBarItem.text = '$(pulse) Code Block Review: Auto Armed'
+      this.statusBarItem.text = this.getAutoCaptureStatusBarText()
       this.statusBarItem.command = 'codexReview.startSession'
-      this.statusBarItem.tooltip = 'Automatic capture is continuously monitoring for short bursts of large or bulk edits.'
+      this.statusBarItem.tooltip = [
+        'Automatic capture is continuously monitoring for short bursts of large or bulk edits.',
+        this.getAutoCaptureBaselineStatusTooltip()
+      ].filter(Boolean).join('\n')
       this.statusBarItem.show()
       return
     }
@@ -2813,6 +3125,34 @@ class ReviewController {
     this.statusBarItem.command = 'codexReview.startSession'
     this.statusBarItem.tooltip = 'Start a review capture session'
     this.statusBarItem.show()
+  }
+
+  getAutoCaptureStatusBarText() {
+    if (this.autoCaptureBaselineRefreshPromise || this.autoCaptureBaselineStatus === 'syncing') {
+      return '$(sync~spin) Code Block Review: Baseline Syncing'
+    }
+
+    if (this.autoCaptureBaselineStatus === 'failed') {
+      return '$(warning) Code Block Review: Baseline Failed'
+    }
+
+    if (this.autoCaptureBaselineEntriesByUri.size === 0) {
+      return '$(pulse) Code Block Review: Baseline Pending'
+    }
+
+    return '$(pulse) Code Block Review: Auto Armed'
+  }
+
+  getAutoCaptureBaselineStatusTooltip() {
+    if (this.autoCaptureBaselineStatusMessage) {
+      return this.autoCaptureBaselineStatusMessage
+    }
+
+    if (this.autoCaptureBaselineEntriesByUri.size > 0) {
+      return `Auto-capture baseline is ready with ${this.autoCaptureBaselineEntriesByUri.size} files.`
+    }
+
+    return 'Auto-capture baseline has not finished syncing yet.'
   }
 
   async syncContexts() {

@@ -111,6 +111,7 @@ The extension currently supports configuration for:
 - optional inline block badges
 - always-on auto capture
 - baseline refresh triggers
+- optional scoped auto-capture baselines for large multi-project workspaces
 - idle timing before review becomes available
 - review offer timeout
 - burst-detection thresholds

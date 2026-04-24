@@ -6,3 +6,4 @@ code-block-review-demo.html
 **/node_modules/**
 **/.git/**
 *.log
+*.vsix

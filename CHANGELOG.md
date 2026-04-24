@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.8
+
+- Reduced typing overhead by avoiding blocking auto-capture baseline work during normal edits
+- Debounced review-mode document diff refreshes to reduce lag while editing inside an active review
+- Added optional scoped auto-capture baseline settings for large multi-project workspaces
+- Ignored likely save-triggered formatter or ESLint autofix edits during idle auto-capture
+- Show auto-capture baseline syncing/ready/failed state in the status bar
+- Reuse unchanged auto-capture baseline snapshots so refreshes only rewrite changed files
+- Show incremental baseline updates after idle manual edits are absorbed
+- Restore inline Accept/Reject actions in deleted-file baseline previews
+- Refresh Explorer review tree nodes from current review data after inline actions
+- Close deleted-file baseline preview tabs after accepting or rejecting their block
+
 ## 0.0.7
 
 - Improved large-file block detection so distant hunks are not collapsed into one giant review block

@@ -232,14 +232,15 @@ function escapeMarkdown(text) {
   return text.replace(/[\\`*_{}[\]()#+\-.!]/g, '\\$&')
 }
 
-function getBottomActionCodeLensRange(document, block) {
+function getBottomActionCodeLensRange(document, block, options = {}) {
   if (document.lineCount === 0) {
     return null
   }
 
-  const preferredLine = block.modifiedEnd < document.lineCount
-    ? block.modifiedEnd
-    : Math.max(block.modifiedEnd - 1, 0)
+  const endLine = options.isDeletedFilePreview ? block.originalEnd : block.modifiedEnd
+  const preferredLine = endLine < document.lineCount
+    ? endLine
+    : Math.max(endLine - 1, 0)
   const line = clamp(preferredLine, 0, document.lineCount - 1)
   return new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 0))
 }

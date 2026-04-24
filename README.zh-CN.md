@@ -111,6 +111,7 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - 可选的行内代码块标签
 - 常驻自动捕获
 - baseline 刷新触发条件
+- 面向大型多项目工作区的可选范围化自动捕获 baseline
 - 进入 review 前的空闲等待时间
 - Ready 状态的等待时长
 - burst 检测阈值

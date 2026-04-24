@@ -21,6 +21,30 @@ const SUPPORTED_AUTO_CAPTURE_TRIGGERS = new Set([
   AUTO_CAPTURE_TRIGGER_WINDOW_FOCUS,
   AUTO_CAPTURE_TRIGGER_ACTIVE_EDITOR_CHANGE
 ])
+const AUTO_CAPTURE_SCOPE_WORKSPACE = 'workspace'
+const AUTO_CAPTURE_SCOPE_ACTIVE_PROJECT = 'activeProject'
+const AUTO_CAPTURE_SCOPE_TOUCHED_PROJECTS = 'touchedProjects'
+const DEFAULT_AUTO_CAPTURE_SCOPE = AUTO_CAPTURE_SCOPE_TOUCHED_PROJECTS
+const SUPPORTED_AUTO_CAPTURE_SCOPES = new Set([
+  AUTO_CAPTURE_SCOPE_WORKSPACE,
+  AUTO_CAPTURE_SCOPE_ACTIVE_PROJECT,
+  AUTO_CAPTURE_SCOPE_TOUCHED_PROJECTS
+])
+const DEFAULT_PROJECT_ROOT_MARKERS = [
+  'package.json',
+  'go.mod',
+  'go.work',
+  'pom.xml',
+  'build.gradle',
+  'settings.gradle',
+  'pyproject.toml',
+  'Cargo.toml',
+  'composer.json',
+  'CMakeLists.txt',
+  'Makefile',
+  '.project-root',
+  '.git'
+]
 
 let cachedIgnoredReviewGlobKey = null
 let cachedIgnoredReviewGlobPatterns = []
@@ -166,10 +190,22 @@ function getAutoCaptureSettings() {
     (Array.isArray(configuredTriggerEvents) ? configuredTriggerEvents : [])
       .filter((value) => SUPPORTED_AUTO_CAPTURE_TRIGGERS.has(value))
   )
+  const configuredScope = config.get('scope', DEFAULT_AUTO_CAPTURE_SCOPE)
+  const scope = SUPPORTED_AUTO_CAPTURE_SCOPES.has(configuredScope)
+    ? configuredScope
+    : DEFAULT_AUTO_CAPTURE_SCOPE
+  const configuredProjectRootMarkers = config.get('projectRootMarkers', DEFAULT_PROJECT_ROOT_MARKERS)
+  const projectRootMarkers = Array.isArray(configuredProjectRootMarkers)
+    ? configuredProjectRootMarkers
+        .map((value) => typeof value === 'string' ? value.trim() : '')
+        .filter(Boolean)
+    : DEFAULT_PROJECT_ROOT_MARKERS
 
   return {
     enabled: Boolean(config.get('enabled', true)),
     triggerEvents,
+    scope,
+    projectRootMarkers,
     baselineRefreshCooldownMs: clampNumber(config.get('baselineRefreshCooldownSeconds', 10), 0, 3600) * 1000,
     captureIdleMs: clampNumber(config.get('captureIdleSeconds', 4), 1, 600) * 1000,
     reviewOfferMs: clampNumber(config.get('reviewOfferSeconds', 60), 1, 600) * 1000,
