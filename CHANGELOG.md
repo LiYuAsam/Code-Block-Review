@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.6
+
+- Fixed rejecting newly created files so they are deleted instead of being left behind as empty files
+
 ## 0.0.5
 
 - Significantly reduced memory and CPU overhead

@@ -1,10 +1,5 @@
 const vscode = require('vscode')
-const crypto = require('crypto')
-const fs = require('fs/promises')
-const os = require('os')
 const path = require('path')
-const WORKSPACE_INCLUDE_GLOB = '**/*'
-const WORKSPACE_EXCLUDE_GLOB = '**/{.git,node_modules,dist,build,out,.next,.turbo,.cache,coverage}/**'
 const AUTO_CAPTURE_TRIGGER_WINDOW_FOCUS = 'windowFocus'
 const AUTO_CAPTURE_TRIGGER_ACTIVE_EDITOR_CHANGE = 'activeEditorChange'
 const GIT_ACTIVITY_SUPPRESSION_WINDOW_MS = 4000
@@ -21,7 +16,6 @@ const {
   getCurrentTrackedText,
   getReviewBlockKey,
   getReviewItemKey,
-  hashText,
   isTrackableDocument,
   isTrackableUri,
   isUndoOrRedoChange,
@@ -47,6 +41,25 @@ const {
   ReviewBlockCodeLensProvider,
   ReviewTreeProvider
 } = require('./review-tree')
+const {
+  cleanupSnapshotDirectory,
+  cloneBaselineEntries,
+  createAutoCaptureBaselineSnapshotDirectory,
+  createSessionBaselineSnapshotDirectory,
+  persistBaselineText,
+  readBaselineEntryText
+} = require('./utils/baseline-snapshots')
+const { createReviewDecorations } = require('./utils/decorations')
+const { ReviewProfiler } = require('./utils/profiler')
+const {
+  WORKSPACE_EXCLUDE_GLOB,
+  WORKSPACE_INCLUDE_GLOB,
+  buildWorkspaceScanCandidates,
+  getWorkspaceBaselineKey,
+  getWorkspaceKeyForUri,
+  isGitMetadataUri,
+  shouldRunFullWorkspaceScan
+} = require('./utils/workspace')
 
 function activate(context) {
   const controller = new ReviewController(context)
@@ -83,13 +96,11 @@ class ReviewController {
     this.cachedPendingItems = []
     this.cachedPendingCountVersion = -1
     this.cachedPendingCount = 0
-    this.profilerOutput = vscode.window.createOutputChannel('Code Block Review Profiler')
-    this.profilerEnabled = this.getProfilerEnabled()
-    this.profilerOutputShown = false
+    this.profiler = new ReviewProfiler()
     this.lastAutoCaptureBaselineRefreshAt = 0
     this.dirtyWorkspaceUris = new Set()
     this.recentGitActivityByWorkspaceKey = new Map()
-    this.autoCaptureBaselineWorkspaceKey = this.getWorkspaceBaselineKey()
+    this.autoCaptureBaselineWorkspaceKey = getWorkspaceBaselineKey()
     this.autoCaptureBaselineEntriesByUri = new Map()
     this.autoCaptureBaselineSnapshotDirectory = null
     this.autoCaptureCandidateBaselineByUri = new Map()
@@ -102,56 +113,12 @@ class ReviewController {
 
     this.treeProvider = new ReviewTreeProvider(this)
     this.blockActionProvider = new ReviewBlockCodeLensProvider(this)
-    this.pendingAddedDecoration = vscode.window.createTextEditorDecorationType({
-      isWholeLine: true,
-      backgroundColor: 'rgba(45, 211, 111, 0.12)',
-      borderColor: 'rgba(45, 211, 111, 0.80)',
-      borderStyle: 'solid',
-      borderWidth: '0 0 0 3px',
-      borderRadius: '4px',
-      overviewRulerColor: 'rgba(45, 211, 111, 0.90)',
-      overviewRulerLane: vscode.OverviewRulerLane.Right
-    })
-    this.pendingDeletedDecoration = vscode.window.createTextEditorDecorationType({
-      isWholeLine: true,
-      backgroundColor: 'rgba(239, 68, 68, 0.12)',
-      borderColor: 'rgba(239, 68, 68, 0.82)',
-      borderStyle: 'solid',
-      borderWidth: '0 0 0 3px',
-      borderRadius: '4px',
-      overviewRulerColor: 'rgba(239, 68, 68, 0.90)',
-      overviewRulerLane: vscode.OverviewRulerLane.Right
-    })
-    this.pendingModifiedDecoration = vscode.window.createTextEditorDecorationType({
-      isWholeLine: true,
-      backgroundColor: 'rgba(34, 197, 94, 0.10)',
-      borderColor: 'rgba(34, 197, 94, 0.82)',
-      borderStyle: 'solid',
-      borderWidth: '0 0 0 3px',
-      borderRadius: '4px',
-      overviewRulerColor: 'rgba(34, 197, 94, 0.90)',
-      overviewRulerLane: vscode.OverviewRulerLane.Right
-    })
-    this.currentReviewDecoration = vscode.window.createTextEditorDecorationType({
-      isWholeLine: true,
-      backgroundColor: 'rgba(250, 204, 21, 0.18)',
-      borderColor: 'rgba(250, 204, 21, 0.95)',
-      borderStyle: 'solid',
-      borderWidth: '0 0 0 4px',
-      borderRadius: '4px',
-      overviewRulerColor: 'rgba(250, 204, 21, 0.95)',
-      overviewRulerLane: vscode.OverviewRulerLane.Center
-    })
-    this.acceptedDecoration = vscode.window.createTextEditorDecorationType({
-      isWholeLine: true,
-      backgroundColor: 'rgba(94, 234, 212, 0.08)',
-      borderColor: 'rgba(94, 234, 212, 0.40)',
-      borderStyle: 'solid',
-      borderWidth: '0 0 0 3px',
-      borderRadius: '4px',
-      overviewRulerColor: 'rgba(94, 234, 212, 0.55)',
-      overviewRulerLane: vscode.OverviewRulerLane.Right
-    })
+    const decorations = createReviewDecorations()
+    this.pendingAddedDecoration = decorations.pendingAdded
+    this.pendingDeletedDecoration = decorations.pendingDeleted
+    this.pendingModifiedDecoration = decorations.pendingModified
+    this.currentReviewDecoration = decorations.currentReview
+    this.acceptedDecoration = decorations.accepted
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100)
 
     context.subscriptions.push(
@@ -161,7 +128,7 @@ class ReviewController {
       this.currentReviewDecoration,
       this.acceptedDecoration,
       this.statusBarItem,
-      this.profilerOutput,
+      this.profiler,
       vscode.window.registerTreeDataProvider('codexReview.filesView', this.treeProvider),
       vscode.languages.registerCodeLensProvider(
         [
@@ -209,12 +176,12 @@ class ReviewController {
       vscode.commands.registerCommand('codexReview.acceptFile', (item) => this.acceptFile(item)),
       vscode.commands.registerCommand('codexReview.rejectFile', (item) => this.rejectFile(item)),
       vscode.commands.registerCommand('codexReview.showProfilerOutput', () => {
-        this.profilerOutput.show(true)
+        this.profiler.show(true)
       })
     )
 
     this.syncContexts()
-    this.logProfilerSnapshot('activate')
+    this.profiler.logSnapshot('activate')
     void this.ensureAutoCaptureReady({ refreshBaseline: true, silent: true })
     this.updateStatusBar()
   }
@@ -234,7 +201,7 @@ class ReviewController {
   initializeWorkspaceWatchers() {
     this.disposeWorkspaceWatchers()
     this.invalidateWorkspaceFileListCache()
-    this.autoCaptureBaselineWorkspaceKey = this.getWorkspaceBaselineKey()
+    this.autoCaptureBaselineWorkspaceKey = getWorkspaceBaselineKey()
 
     const folders = vscode.workspace.workspaceFolders ?? []
     for (const folder of folders) {
@@ -272,7 +239,7 @@ class ReviewController {
     }
 
     this.autoCaptureSettings = getAutoCaptureSettings()
-    this.profilerEnabled = this.getProfilerEnabled()
+    this.profiler.refreshConfiguration()
     this.invalidateWorkspaceFileListCache()
     clearIgnoredReviewGlobsCache()
 
@@ -395,58 +362,6 @@ class ReviewController {
     }
   }
 
-  shouldRunFullWorkspaceScan(reason) {
-    return !reason ||
-      reason === 'manual-refresh' ||
-      reason === 'final-pass-1' ||
-      reason === 'final-pass-2' ||
-      reason === 'delete-event'
-  }
-
-  buildWorkspaceScanCandidates(currentWorkspaceUris, shouldRunFullScan) {
-    if (shouldRunFullScan) {
-      const candidateUris = new Map(currentWorkspaceUris)
-
-      for (const document of vscode.workspace.textDocuments) {
-        if (isTrackableDocument(document)) {
-          candidateUris.set(document.uri.toString(), document.uri)
-        }
-      }
-
-      for (const uriString of this.session?.baselineEntriesByUri.keys() ?? []) {
-        const uri = vscode.Uri.parse(uriString)
-        if (!isTrackableUri(uri)) {
-          continue
-        }
-
-        if (!candidateUris.has(uriString)) {
-          candidateUris.set(uriString, uri)
-        }
-      }
-
-      return candidateUris
-    }
-
-    const candidateUris = new Map()
-
-    for (const uriString of this.dirtyWorkspaceUris) {
-      const existingUri = currentWorkspaceUris.get(uriString)
-      if (existingUri) {
-        candidateUris.set(uriString, existingUri)
-        continue
-      }
-
-      try {
-        const parsedUri = vscode.Uri.parse(uriString)
-        if (parsedUri.scheme === 'file' || parsedUri.scheme === 'untitled') {
-          candidateUris.set(uriString, parsedUri)
-        }
-      } catch {}
-    }
-
-    return candidateUris
-  }
-
   async listTrackableWorkspaceFiles() {
     if (this.workspaceFileListCache) {
       return this.workspaceFileListCache
@@ -469,40 +384,8 @@ class ReviewController {
     return this.workspaceFileListPromise
   }
 
-  getWorkspaceBaselineKey() {
-    const folders = vscode.workspace.workspaceFolders ?? []
-    if (folders.length === 0) {
-      return 'no-workspace'
-    }
-
-    const serializedFolders = folders
-      .map((folder) => folder.uri.toString())
-      .sort()
-      .join('||')
-
-    return hashText(serializedFolders)
-  }
-
-  getWorkspaceKeyForUri(uri) {
-    const folder = uri ? vscode.workspace.getWorkspaceFolder(uri) : null
-    return folder?.uri.toString() ?? null
-  }
-
-  getProfilerEnabled() {
-    return Boolean(vscode.workspace.getConfiguration('codexReview.profiler').get('enabled', false))
-  }
-
-  isGitMetadataUri(uri) {
-    if (!uri || uri.scheme !== 'file') {
-      return false
-    }
-
-    const normalizedPath = uri.fsPath.replace(/\\/g, '/')
-    return normalizedPath.endsWith('/.git') || normalizedPath.includes('/.git/')
-  }
-
   markRecentGitActivity(uri) {
-    const workspaceKey = this.getWorkspaceKeyForUri(uri)
+    const workspaceKey = getWorkspaceKeyForUri(uri)
     if (!workspaceKey) {
       return
     }
@@ -522,7 +405,7 @@ class ReviewController {
     const cutoff = Date.now() - GIT_ACTIVITY_SUPPRESSION_WINDOW_MS
     for (const entry of this.autoCaptureEvidence) {
       try {
-        const workspaceKey = this.getWorkspaceKeyForUri(vscode.Uri.parse(entry.uri))
+        const workspaceKey = getWorkspaceKeyForUri(vscode.Uri.parse(entry.uri))
         if (!workspaceKey) {
           continue
         }
@@ -537,83 +420,8 @@ class ReviewController {
     return false
   }
 
-  formatProfilerValue(value) {
-    return typeof value === 'number' && Number.isFinite(value)
-      ? value.toFixed(1)
-      : '0.0'
-  }
-
-  getProfilerSnapshot() {
-    const memory = process.memoryUsage()
-    return {
-      rssMb: memory.rss / (1024 * 1024),
-      heapUsedMb: memory.heapUsed / (1024 * 1024),
-      heapTotalMb: memory.heapTotal / (1024 * 1024),
-      externalMb: memory.external / (1024 * 1024)
-    }
-  }
-
-  logProfilerSnapshot(label, extra = {}) {
-    if (!this.profilerEnabled) {
-      return
-    }
-
-    const memory = this.getProfilerSnapshot()
-    const timestamp = new Date().toISOString()
-    const details = Object.entries(extra)
-      .filter(([, value]) => value !== undefined && value !== null && value !== '')
-      .map(([key, value]) => `${key}=${value}`)
-      .join(' ')
-
-    if (!this.profilerOutputShown) {
-      this.profilerOutput.show(true)
-      this.profilerOutputShown = true
-    }
-
-    this.profilerOutput.appendLine(
-      `[${timestamp}] ${label} rss=${this.formatProfilerValue(memory.rssMb)}MB heap=${this.formatProfilerValue(memory.heapUsedMb)}/${this.formatProfilerValue(memory.heapTotalMb)}MB external=${this.formatProfilerValue(memory.externalMb)}MB${details ? ` ${details}` : ''}`
-    )
-  }
-
-  startProfilerMark(label, extra = {}) {
-    if (!this.profilerEnabled) {
-      return null
-    }
-
-    this.logProfilerSnapshot(`${label}:start`, extra)
-    return {
-      label,
-      startedAt: process.hrtime.bigint(),
-      cpuUsage: process.cpuUsage()
-    }
-  }
-
-  finishProfilerMark(mark, extra = {}) {
-    if (!mark) {
-      return
-    }
-
-    const elapsedMs = Number(process.hrtime.bigint() - mark.startedAt) / 1e6
-    const cpu = process.cpuUsage(mark.cpuUsage)
-    this.logProfilerSnapshot(`${mark.label}:end`, {
-      elapsedMs: this.formatProfilerValue(elapsedMs),
-      cpuUserMs: this.formatProfilerValue(cpu.user / 1000),
-      cpuSystemMs: this.formatProfilerValue(cpu.system / 1000),
-      ...extra
-    })
-  }
-
-  getSessionBaselineEntry(uriString) {
-    return this.session?.baselineEntriesByUri.get(uriString) ?? null
-  }
-
   hasSessionBaseline(uriString) {
     return Boolean(this.session?.baselineEntriesByUri.has(uriString))
-  }
-
-  async createSessionBaselineSnapshotDirectory() {
-    const prefix = path.join(os.tmpdir(), 'codex-review-baseline-')
-    return fs.mkdtemp(prefix)
   }
 
   async ensureAutoCaptureBaselineSnapshotDirectory() {
@@ -621,10 +429,8 @@ class ReviewController {
       return this.autoCaptureBaselineSnapshotDirectory
     }
 
-    const workspaceKey = this.autoCaptureBaselineWorkspaceKey || this.getWorkspaceBaselineKey()
-    const rootDirectory = path.join(os.tmpdir(), 'codex-review-auto-baselines', workspaceKey)
-    await fs.mkdir(rootDirectory, { recursive: true })
-    const snapshotDirectory = await fs.mkdtemp(path.join(rootDirectory, 'armed-'))
+    const workspaceKey = this.autoCaptureBaselineWorkspaceKey || getWorkspaceBaselineKey()
+    const snapshotDirectory = await createAutoCaptureBaselineSnapshotDirectory(workspaceKey)
     this.autoCaptureBaselineSnapshotDirectory = snapshotDirectory
     return snapshotDirectory
   }
@@ -636,9 +442,7 @@ class ReviewController {
     }
 
     this.autoCaptureBaselineSnapshotDirectory = null
-    try {
-      await fs.rm(snapshotDirectory, { recursive: true, force: true })
-    } catch {}
+    await cleanupSnapshotDirectory(snapshotDirectory)
   }
 
   async cleanupSessionBaselineSnapshots(session = this.session) {
@@ -648,9 +452,7 @@ class ReviewController {
     }
 
     session.baselineSnapshotDirectory = null
-    try {
-      await fs.rm(snapshotDirectory, { recursive: true, force: true })
-    } catch {}
+    await cleanupSnapshotDirectory(snapshotDirectory)
   }
 
   async persistSessionBaselineText(uriString, text) {
@@ -663,8 +465,7 @@ class ReviewController {
       return null
     }
 
-    const snapshotPath = path.join(snapshotDirectory, `${hashText(uriString)}-${crypto.randomUUID()}.txt`)
-    await fs.writeFile(snapshotPath, text, 'utf8')
+    const snapshotPath = await persistBaselineText(snapshotDirectory, uriString, text)
     this.session.baselineEntriesByUri.set(uriString, {
       kind: 'snapshot',
       snapshotPath
@@ -674,9 +475,7 @@ class ReviewController {
 
   async persistAutoCaptureBaselineText(uriString, text) {
     const snapshotDirectory = await this.ensureAutoCaptureBaselineSnapshotDirectory()
-    const snapshotPath = path.join(snapshotDirectory, `${hashText(uriString)}-${crypto.randomUUID()}.txt`)
-    await fs.writeFile(snapshotPath, text, 'utf8')
-    return snapshotPath
+    return persistBaselineText(snapshotDirectory, uriString, text)
   }
 
   async setSessionBaselineText(uriString, text) {
@@ -697,7 +496,11 @@ class ReviewController {
       return
     }
 
-    this.session.baselineEntriesByUri.set(uriString, { kind: 'empty' })
+    this.session.baselineEntriesByUri.set(uriString, { kind: 'missing' })
+  }
+
+  hasSessionMissingBaseline(uriString) {
+    return this.session?.baselineEntriesByUri.get(uriString)?.kind === 'missing'
   }
 
   async getSessionBaselineText(uriString) {
@@ -706,19 +509,7 @@ class ReviewController {
     }
 
     const entry = this.session.baselineEntriesByUri.get(uriString)
-    if (!entry || entry.kind === 'empty') {
-      return ''
-    }
-
-    if (entry.kind === 'snapshot') {
-      try {
-        return await fs.readFile(entry.snapshotPath, 'utf8')
-      } catch {
-        return ''
-      }
-    }
-
-    return ''
+    return readBaselineEntryText(entry)
   }
 
   hasAutoCaptureIdleBaseline(uriString) {
@@ -744,29 +535,24 @@ class ReviewController {
 
   async getAutoCaptureIdleBaselineText(uriString) {
     const entry = this.autoCaptureBaselineEntriesByUri.get(uriString)
-    if (!entry || entry.kind === 'empty') {
+    return readBaselineEntryText(entry)
+  }
+
+  async getAutoCaptureCandidateBaselineText(uriString) {
+    const candidateBaseline = this.autoCaptureCandidateBaselineByUri.get(uriString)
+    if (candidateBaseline?.kind === 'missing') {
       return ''
     }
 
-    if (entry.kind === 'snapshot') {
-      try {
-        return await fs.readFile(entry.snapshotPath, 'utf8')
-      } catch {
-        return ''
-      }
+    if (typeof candidateBaseline === 'string') {
+      return candidateBaseline
     }
 
-    return ''
+    return this.getAutoCaptureIdleBaselineText(uriString)
   }
 
   buildAutoCaptureBaselineEntryMap() {
-    const baselineEntries = new Map()
-
-    for (const [uriString, entry] of this.autoCaptureBaselineEntriesByUri.entries()) {
-      baselineEntries.set(uriString, { ...entry })
-    }
-
-    return baselineEntries
+    return cloneBaselineEntries(this.autoCaptureBaselineEntriesByUri)
   }
 
   async refreshAutoCaptureBaseline() {
@@ -775,7 +561,7 @@ class ReviewController {
     }
 
     this.autoCaptureBaselineRefreshPromise = (async () => {
-      const profile = this.startProfilerMark('refreshAutoCaptureBaseline')
+      const profile = this.profiler.startMark('refreshAutoCaptureBaseline')
       const nextEntriesByUri = new Map()
       const previousSnapshotDirectory = this.autoCaptureBaselineSnapshotDirectory
       this.autoCaptureBaselineSnapshotDirectory = null
@@ -813,11 +599,9 @@ class ReviewController {
         this.lastAutoCaptureBaselineRefreshAt = Date.now()
       } finally {
         if (previousSnapshotDirectory) {
-          try {
-            await fs.rm(previousSnapshotDirectory, { recursive: true, force: true })
-          } catch {}
+          await cleanupSnapshotDirectory(previousSnapshotDirectory)
         }
-        this.finishProfilerMark(profile, {
+        this.profiler.finishMark(profile, {
           fileCount: nextEntriesByUri.size,
           baselineEntryCount: this.autoCaptureBaselineEntriesByUri.size,
           candidateCount: this.autoCaptureCandidateBaselineByUri.size,
@@ -842,7 +626,7 @@ class ReviewController {
     this.autoCaptureReviewPromptNonce += 1
     this.lastAutoCaptureBaselineRefreshAt = 0
     void this.cleanupAutoCaptureBaselineSnapshots()
-    this.logProfilerSnapshot('resetAutoCaptureArmedState', {
+    this.profiler.logSnapshot('resetAutoCaptureArmedState', {
       baselineEntryCount: this.autoCaptureBaselineEntriesByUri.size,
       candidateCount: this.autoCaptureCandidateBaselineByUri.size,
       snapshotDir: this.autoCaptureBaselineSnapshotDirectory ? 'ready' : 'cleared'
@@ -987,11 +771,11 @@ class ReviewController {
   async recordAutoCaptureEvidence(event) {
     const uriString = event.document.uri.toString()
     if (!this.autoCaptureCandidateBaselineByUri.has(uriString)) {
-      const idleBaselineText = await this.getAutoCaptureIdleBaselineText(uriString)
-      this.autoCaptureCandidateBaselineByUri.set(
-        uriString,
-        idleBaselineText
-      )
+      const idleBaseline = this.autoCaptureBaselineEntriesByUri.get(uriString)
+      const candidateBaseline = idleBaseline
+        ? await readBaselineEntryText(idleBaseline)
+        : { kind: 'missing' }
+      this.autoCaptureCandidateBaselineByUri.set(uriString, candidateBaseline)
     }
 
     this.autoCaptureEvidence.push({
@@ -1054,7 +838,7 @@ class ReviewController {
 
     if (summary.hasLargeChange) {
       if (this.hasRecentGitActivity(summary)) {
-        this.logProfilerSnapshot('autoCaptureSkippedGitLike', {
+        this.profiler.logSnapshot('autoCaptureSkippedGitLike', {
           uniqueFileCount: summary.uniqueFileCount,
           totalChangedLines: summary.totalChangedLines,
           totalChangedChars: summary.totalChangedChars
@@ -1069,7 +853,7 @@ class ReviewController {
       summary.totalChangedLines >= adjustedMultiFileMinLines
     ) {
       if (this.hasRecentGitActivity(summary)) {
-        this.logProfilerSnapshot('autoCaptureSkippedGitLike', {
+        this.profiler.logSnapshot('autoCaptureSkippedGitLike', {
           uniqueFileCount: summary.uniqueFileCount,
           totalChangedLines: summary.totalChangedLines,
           totalChangedChars: summary.totalChangedChars
@@ -1081,7 +865,7 @@ class ReviewController {
 
     if (summary.totalChangedLines >= adjustedBurstMinLines) {
       if (this.hasRecentGitActivity(summary)) {
-        this.logProfilerSnapshot('autoCaptureSkippedGitLike', {
+        this.profiler.logSnapshot('autoCaptureSkippedGitLike', {
           uniqueFileCount: summary.uniqueFileCount,
           totalChangedLines: summary.totalChangedLines,
           totalChangedChars: summary.totalChangedChars
@@ -1175,7 +959,7 @@ class ReviewController {
       return
     }
 
-    if (this.isGitMetadataUri(uri)) {
+    if (isGitMetadataUri(uri)) {
       this.markRecentGitActivity(uri)
       return
     }
@@ -1268,10 +1052,7 @@ class ReviewController {
 
       const existsInWorkspace = await uriExists(uri)
       const currentText = await getCurrentTrackedText(uri, existsInWorkspace)
-      const candidateBaselineText = this.autoCaptureCandidateBaselineByUri.get(uriString)
-      const baselineText = typeof candidateBaselineText === 'string'
-        ? candidateBaselineText
-        : await this.getAutoCaptureIdleBaselineText(uriString)
+      const baselineText = await this.getAutoCaptureCandidateBaselineText(uriString)
 
       if (currentText === null && !this.hasAutoCaptureIdleBaseline(uriString)) {
         this.dropAutoCaptureEvidenceForUri(uriString)
@@ -1283,7 +1064,12 @@ class ReviewController {
         continue
       }
 
-      this.autoCaptureCandidateBaselineByUri.set(uriString, baselineText)
+      if (!this.autoCaptureCandidateBaselineByUri.has(uriString)) {
+        this.autoCaptureCandidateBaselineByUri.set(
+          uriString,
+          this.hasAutoCaptureIdleBaseline(uriString) ? baselineText : { kind: 'missing' }
+        )
+      }
       this.autoCaptureEvidence = this.autoCaptureEvidence.filter((entry) => entry.uri !== uriString)
       this.autoCaptureEvidence.push({
         timestamp: Date.now(),
@@ -1395,8 +1181,11 @@ class ReviewController {
     }
 
     const uriString = event.document.uri.toString()
-    const candidateBaselineText = this.autoCaptureCandidateBaselineByUri.get(uriString)
-    if (typeof candidateBaselineText === 'string' && event.document.getText() === candidateBaselineText) {
+    const candidateBaselineText = await this.getAutoCaptureCandidateBaselineText(uriString)
+    if (
+      this.autoCaptureCandidateBaselineByUri.has(uriString) &&
+      event.document.getText() === candidateBaselineText
+    ) {
       this.dropAutoCaptureEvidenceForUri(uriString)
       this.updateStatusBar()
       await this.syncContexts()
@@ -1423,7 +1212,7 @@ class ReviewController {
   }
 
   async startSession(options = {}) {
-    const profile = this.startProfilerMark('startSession', { mode: options.mode ?? 'manual' })
+    const profile = this.profiler.startMark('startSession', { mode: options.mode ?? 'manual' })
     const {
       mode = 'manual',
       silent = false,
@@ -1450,7 +1239,7 @@ class ReviewController {
       }
       this.resetAutoCaptureArmedState()
       this.dirtyWorkspaceUris.clear()
-      const baselineSnapshotDirectory = adoptedBaselineSnapshotDirectory ?? await this.createSessionBaselineSnapshotDirectory()
+      const baselineSnapshotDirectory = adoptedBaselineSnapshotDirectory ?? await createSessionBaselineSnapshotDirectory()
       this.sessionMode = mode
       this.session = {
         startedAt: new Date().toISOString(),
@@ -1466,15 +1255,19 @@ class ReviewController {
         for (const [key, entry] of baselineEntries.entries()) {
           if (entry?.kind === 'snapshot' && entry.snapshotPath) {
             this.session.baselineEntriesByUri.set(key, { ...entry })
-          } else if (entry?.kind === 'empty') {
-            this.session.baselineEntriesByUri.set(key, { kind: 'empty' })
+          } else if (entry?.kind === 'empty' || entry?.kind === 'missing') {
+            this.session.baselineEntriesByUri.set(key, { kind: entry.kind })
           }
         }
       }
 
       if (baselineOverrides instanceof Map) {
-        for (const [key, text] of baselineOverrides.entries()) {
-          await this.setSessionBaselineText(key, text)
+        for (const [key, baseline] of baselineOverrides.entries()) {
+          if (baseline?.kind === 'missing') {
+            this.setSessionBaselineMissing(key)
+          } else {
+            await this.setSessionBaselineText(key, baseline)
+          }
         }
       }
 
@@ -1506,7 +1299,7 @@ class ReviewController {
 
       return true
     } finally {
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         baselineEntries: this.session?.baselineEntriesByUri.size ?? 0,
         touchedUris: this.session?.touchedUris.size ?? 0
       })
@@ -1514,7 +1307,7 @@ class ReviewController {
   }
 
   async stopSession(options = {}) {
-    const profile = this.startProfilerMark('stopSession', { requestedMode: options.requestedMode ?? '' })
+    const profile = this.profiler.startMark('stopSession', { requestedMode: options.requestedMode ?? '' })
     const {
       silent = false,
       requestedMode = null
@@ -1542,7 +1335,7 @@ class ReviewController {
       if (!canReuseAutoFinalPass) {
         await this.runFinalWorkspaceDiffPass()
       } else {
-        this.logProfilerSnapshot('runFinalWorkspaceDiffPass:reused', {
+        this.profiler.logSnapshot('runFinalWorkspaceDiffPass:reused', {
           reason: 'auto-ready-clean'
         })
       }
@@ -1564,7 +1357,7 @@ class ReviewController {
 
       return true
     } finally {
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         pendingBlocks: this.getPendingBlockCount(),
         reviewFiles: this.session?.reviewFiles.size ?? 0
       })
@@ -1636,7 +1429,7 @@ class ReviewController {
   }
 
   async runFinalWorkspaceDiffPass() {
-    const profile = this.startProfilerMark('runFinalWorkspaceDiffPass')
+    const profile = this.profiler.startMark('runFinalWorkspaceDiffPass')
     try {
       await this.scanWorkspaceForChanges('final-pass-1')
 
@@ -1650,14 +1443,14 @@ class ReviewController {
       if (this.session) {
         this.session.finalWorkspaceDiffClean = this.dirtyWorkspaceUris.size === 0
       }
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         touchedUris: this.session?.touchedUris.size ?? 0,
         reviewFiles: this.session?.reviewFiles.size ?? 0,
         secondPass: pendingDirtyCount > 0 ? 'dirty-only' : 'skipped',
         dirtyAfterWait: pendingDirtyCount
       })
     } catch (error) {
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         touchedUris: this.session?.touchedUris.size ?? 0,
         reviewFiles: this.session?.reviewFiles.size ?? 0,
         failed: 'true'
@@ -1667,7 +1460,7 @@ class ReviewController {
   }
 
   async completeReview(message, options = {}) {
-    const profile = this.startProfilerMark('completeReview', { silent: options.silent ? 'true' : 'false' })
+    const profile = this.profiler.startMark('completeReview', { silent: options.silent ? 'true' : 'false' })
     const { silent = false } = options
 
     if (this.state === 'idle') {
@@ -1699,7 +1492,7 @@ class ReviewController {
         void vscode.window.showInformationMessage(message)
       }
     } finally {
-      this.finishProfilerMark(profile, { state: this.state })
+      this.profiler.finishMark(profile, { state: this.state })
     }
   }
 
@@ -1708,7 +1501,7 @@ class ReviewController {
       return
     }
 
-    const profile = this.startProfilerMark('refreshReview')
+    const profile = this.profiler.startMark('refreshReview')
     try {
       await this.scanWorkspaceForChanges('manual-refresh')
       this.treeProvider.refresh()
@@ -1717,7 +1510,7 @@ class ReviewController {
       this.refreshAllVisibleEditors()
       await this.maybeAutoComplete()
     } finally {
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         pendingBlocks: this.getPendingBlockCount(),
         reviewFiles: this.session?.reviewFiles.size ?? 0
       })
@@ -1868,7 +1661,7 @@ class ReviewController {
       return
     }
 
-    const profile = this.startProfilerMark('captureWorkspaceBaseline')
+    const profile = this.profiler.startMark('captureWorkspaceBaseline')
     const workspaceFiles = await this.listTrackableWorkspaceFiles()
 
     try {
@@ -1907,7 +1700,7 @@ class ReviewController {
         }
       })
     } finally {
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         workspaceFiles: workspaceFiles.length,
         baselineEntries: this.session?.baselineEntriesByUri.size ?? 0
       })
@@ -1920,12 +1713,12 @@ class ReviewController {
       return
     }
 
-    const requestedFullScan = this.shouldRunFullWorkspaceScan(reason)
+    const requestedFullScan = shouldRunFullWorkspaceScan(reason)
     if (this.workspaceScanPromise) {
       const activeReason = this.workspaceScanReason
-      const activeFullScan = this.shouldRunFullWorkspaceScan(activeReason)
+      const activeFullScan = shouldRunFullWorkspaceScan(activeReason)
       if (activeFullScan && requestedFullScan) {
-        this.logProfilerSnapshot('scanWorkspaceForChanges:coalesced', {
+        this.profiler.logSnapshot('scanWorkspaceForChanges:coalesced', {
           reason,
           activeReason
         })
@@ -1957,13 +1750,18 @@ class ReviewController {
       return
     }
 
-    const profile = this.startProfilerMark('scanWorkspaceForChanges', { reason })
+    const profile = this.profiler.startMark('scanWorkspaceForChanges', { reason })
     const scanSession = this.session
     const dirtyUrisAtScanStart = new Set(this.dirtyWorkspaceUris)
     const workspaceFiles = await this.listTrackableWorkspaceFiles()
     const currentWorkspaceUris = new Map(workspaceFiles.map((uri) => [uri.toString(), uri]))
-    const shouldRunFullScan = this.shouldRunFullWorkspaceScan(reason)
-    const candidateUris = this.buildWorkspaceScanCandidates(currentWorkspaceUris, shouldRunFullScan)
+    const shouldRunFullScan = shouldRunFullWorkspaceScan(reason)
+    const candidateUris = buildWorkspaceScanCandidates({
+      currentWorkspaceUris,
+      shouldRunFullScan,
+      baselineUriStrings: this.session?.baselineEntriesByUri.keys() ?? [],
+      dirtyWorkspaceUris: this.dirtyWorkspaceUris
+    })
 
     try {
       if (this.session !== scanSession) {
@@ -2029,7 +1827,7 @@ class ReviewController {
         }
       }
 
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         fullScan: shouldRunFullScan ? 'true' : 'false',
         candidateUris: candidateUris.size,
         touchedUris: this.session?.touchedUris.size ?? 0,
@@ -2213,6 +2011,49 @@ class ReviewController {
     }
   }
 
+  async deleteFileUri(uri) {
+    if (!uri || uri.scheme !== 'file') {
+      return false
+    }
+
+    try {
+      const edit = new vscode.WorkspaceEdit()
+      edit.deleteFile(uri, { ignoreIfNotExists: true })
+      const applied = await vscode.workspace.applyEdit(edit)
+      if (applied) {
+        this.invalidateWorkspaceFileListCache()
+      }
+      return applied
+    } catch {
+      return false
+    }
+  }
+
+  async rejectUriToBaseline(uri, baselineText) {
+    if (this.hasSessionMissingBaseline(uri.toString())) {
+      return this.deleteFileUri(uri)
+    }
+
+    return this.applyTextToUri(uri, baselineText)
+  }
+
+  async finishRejectedMissingFile(uri) {
+    if (!this.session || !uri) {
+      return
+    }
+
+    const uriString = uri.toString()
+    this.session.reviewFiles.delete(uriString)
+    this.session.touchedUris.delete(uriString)
+    this.dirtyWorkspaceUris.delete(uriString)
+    this.markReviewDataChanged()
+    this.treeProvider.refresh()
+    this.blockActionProvider.refresh()
+    this.updateStatusBar()
+    this.refreshDecorationsForUri(uriString)
+    await this.maybeAutoComplete()
+  }
+
   async acceptBlock(item) {
     const block = this.findBlockItem(item)
     if (!block || block.block.status !== 'pending') {
@@ -2253,14 +2094,21 @@ class ReviewController {
     const document = await safeOpenDocument(block.uri.toString())
     const currentText = document ? document.getText() : ''
     const nextText = rejectBlockFromDocumentText(currentText, block.block)
-    const applied = await this.applyTextToUri(block.uri, nextText)
+    const shouldDeleteFile = nextText === '' && this.hasSessionMissingBaseline(block.uri.toString())
+    const applied = nextText === ''
+      ? await this.rejectUriToBaseline(block.uri, nextText)
+      : await this.applyTextToUri(block.uri, nextText)
 
     if (!applied) {
       void vscode.window.showWarningMessage('Failed to reject block.')
       return
     }
 
-    await this.refreshChangedReviewFile(block.uri)
+    if (shouldDeleteFile) {
+      await this.finishRejectedMissingFile(block.uri)
+    } else {
+      await this.refreshChangedReviewFile(block.uri)
+    }
     await this.refreshReviewPanel()
 
     if (currentText === nextText) {
@@ -2307,14 +2155,19 @@ class ReviewController {
     }
 
     const baselineText = await this.getSessionBaselineText(file.uri.toString())
-    const applied = await this.applyTextToUri(file.uri, baselineText)
+    const shouldDeleteFile = this.hasSessionMissingBaseline(file.uri.toString())
+    const applied = await this.rejectUriToBaseline(file.uri, baselineText)
 
     if (!applied) {
       void vscode.window.showWarningMessage('Failed to reject file.')
       return
     }
 
-    await this.refreshChangedReviewFile(file.uri)
+    if (shouldDeleteFile) {
+      await this.finishRejectedMissingFile(file.uri)
+    } else {
+      await this.refreshChangedReviewFile(file.uri)
+    }
     await this.refreshReviewPanel()
   }
 
@@ -2354,7 +2207,7 @@ class ReviewController {
 
     for (const file of this.session.reviewFiles.values()) {
       const baselineText = await this.getSessionBaselineText(file.uri.toString())
-      const applied = await this.applyTextToUri(file.uri, baselineText)
+      const applied = await this.rejectUriToBaseline(file.uri, baselineText)
       if (!applied) {
         void vscode.window.showWarningMessage(`Failed to reject ${toWorkspaceLabel(file.uri)}.`)
         return
@@ -2566,7 +2419,7 @@ class ReviewController {
       return
     }
 
-    const profile = this.startProfilerMark('refreshReviewPanel')
+    const profile = this.profiler.startMark('refreshReviewPanel')
     const currentItem = this.reviewPanelState.currentItem
     const currentBlock = currentItem ? this.findBlockItem(currentItem) : null
     const previewData = currentBlock
@@ -2612,7 +2465,7 @@ class ReviewController {
 
       this.reviewPanelState.panel.webview.html = createReviewPanelHtml(previewData, Boolean(currentBlock), navigation, newPendingCount)
     } finally {
-      this.finishProfilerMark(profile, {
+      this.profiler.finishMark(profile, {
         hasLiveBlock: currentBlock ? 'true' : 'false',
         navigationTotal: navigation.total
       })

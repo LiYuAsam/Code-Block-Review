@@ -2,7 +2,7 @@
   "name": "code-block-review",
   "displayName": "Code Block Review",
   "description": "A VS Code extension for reviewing AI-assisted and manual code changes in block-based review sessions.",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "liyuasam",
   "license": "MIT",
   "repository": {
