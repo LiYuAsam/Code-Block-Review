@@ -3,6 +3,7 @@ const path = require('path')
 const AUTO_CAPTURE_TRIGGER_WINDOW_FOCUS = 'windowFocus'
 const AUTO_CAPTURE_TRIGGER_ACTIVE_EDITOR_CHANGE = 'activeEditorChange'
 const GIT_ACTIVITY_SUPPRESSION_WINDOW_MS = 4000
+const DELETED_FILE_PREVIEW_SCHEME = 'codex-review-deleted'
 const {
   buildReviewBlocks,
   clearIgnoredReviewGlobsCache,
@@ -32,6 +33,7 @@ const {
 const {
   cloneBlockForPreview,
   createDecorationOption,
+  createDeletedBaselineDecorationOption,
   createReviewPanelHtml,
   createReviewPanelLoadingHtml,
   createReviewPanelUnavailableHtml,
@@ -109,13 +111,17 @@ class ReviewController {
     this.autoCaptureReviewPending = false
     this.autoCaptureReviewPromptNonce = 0
     this.autoCaptureSettings = getAutoCaptureSettings()
+    this.deletedFilePreviewProvider = {
+      provideTextDocumentContent: (uri) => this.provideDeletedFilePreviewContent(uri)
+    }
     this.initializeWorkspaceWatchers()
 
     this.treeProvider = new ReviewTreeProvider(this)
     this.blockActionProvider = new ReviewBlockCodeLensProvider(this)
     const decorations = createReviewDecorations()
     this.pendingAddedDecoration = decorations.pendingAdded
-    this.pendingDeletedDecoration = decorations.pendingDeleted
+    this.pendingDeletedBaselineDecoration = decorations.pendingDeletedBaseline
+    this.deletedFilePreviewDecoration = decorations.deletedFilePreview
     this.pendingModifiedDecoration = decorations.pendingModified
     this.currentReviewDecoration = decorations.currentReview
     this.acceptedDecoration = decorations.accepted
@@ -123,12 +129,14 @@ class ReviewController {
 
     context.subscriptions.push(
       this.pendingAddedDecoration,
-      this.pendingDeletedDecoration,
+      this.pendingDeletedBaselineDecoration,
+      this.deletedFilePreviewDecoration,
       this.pendingModifiedDecoration,
       this.currentReviewDecoration,
       this.acceptedDecoration,
       this.statusBarItem,
       this.profiler,
+      vscode.workspace.registerTextDocumentContentProvider(DELETED_FILE_PREVIEW_SCHEME, this.deletedFilePreviewProvider),
       vscode.window.registerTreeDataProvider('codexReview.filesView', this.treeProvider),
       vscode.languages.registerCodeLensProvider(
         [
@@ -1872,15 +1880,101 @@ class ReviewController {
     return this.cachedPendingCount
   }
 
+  async openReviewSourceDocument(blockInfo) {
+    if (await this.shouldUseDeletedFilePreview(blockInfo)) {
+      return {
+        document: await vscode.workspace.openTextDocument(this.createDeletedFilePreviewUri(blockInfo)),
+        isDeletedFilePreview: true
+      }
+    }
+
+    return {
+      document: await vscode.workspace.openTextDocument(blockInfo.uri),
+      isDeletedFilePreview: false
+    }
+  }
+
+  async shouldUseDeletedFilePreview(blockInfo) {
+    return Boolean(
+      blockInfo?.block?.changeKind === 'deletion' &&
+      blockInfo.uri?.scheme === 'file' &&
+      !(await uriExists(blockInfo.uri))
+    )
+  }
+
+  createDeletedFilePreviewUri(blockInfo) {
+    const params = new URLSearchParams({
+      uri: blockInfo.uri.toString(),
+      block: blockInfo.block.id
+    })
+    return vscode.Uri.from({
+      scheme: DELETED_FILE_PREVIEW_SCHEME,
+      path: blockInfo.uri.path,
+      query: params.toString()
+    })
+  }
+
+  provideDeletedFilePreviewContent(uri) {
+    const blockInfo = this.findDeletedFilePreviewBlock(uri)
+    if (!blockInfo) {
+      return '// Deleted file preview is no longer available.'
+    }
+
+    return blockInfo.block.originalText || ''
+  }
+
+  findDeletedFilePreviewBlock(uri) {
+    if (!this.session) {
+      return null
+    }
+
+    const params = new URLSearchParams(uri.query)
+    const sourceUri = params.get('uri')
+    const blockId = params.get('block')
+    if (!sourceUri || !blockId) {
+      return null
+    }
+
+    const file = this.session.reviewFiles.get(sourceUri)
+    if (!file) {
+      return null
+    }
+
+    const block = file.blocks.find((candidate) => candidate.id === blockId)
+    if (!block) {
+      return null
+    }
+
+    return {
+      uri: file.uri,
+      block
+    }
+  }
+
+  getSourceRangeForBlock(document, block, isDeletedFilePreview) {
+    if (!isDeletedFilePreview) {
+      return getRangeForBlock(document, block)
+    }
+
+    if (document.lineCount === 0) {
+      return null
+    }
+
+    const startLine = Math.min(Math.max(block.originalStart, 0), document.lineCount - 1)
+    const endLine = Math.min(Math.max(block.originalEnd - 1, startLine), document.lineCount - 1)
+    return new vscode.Range(new vscode.Position(startLine, 0), document.lineAt(endLine).range.end)
+  }
+
   async openBlock(item) {
     const block = this.findBlockItem(item)
     if (!block) {
       return
     }
 
-    const document = await vscode.workspace.openTextDocument(block.uri)
+    const source = await this.openReviewSourceDocument(block)
+    const document = source.document
     const editor = await vscode.window.showTextDocument(document, { preview: false })
-    const range = getRangeForBlock(document, block.block)
+    const range = this.getSourceRangeForBlock(document, block.block, source.isDeletedFilePreview)
     if (range) {
       editor.selection = new vscode.Selection(range.start, range.start)
       editor.revealRange(range, vscode.TextEditorRevealType.InCenter)
@@ -2642,10 +2736,11 @@ class ReviewController {
       return
     }
 
-    const document = await vscode.workspace.openTextDocument(block.uri)
+    const source = await this.openReviewSourceDocument(block)
+    const document = source.document
     const sourceViewColumn = this.reviewPanelState?.sourceViewColumn ?? this.getPreferredSourceViewColumn()
     let editor = vscode.window.visibleTextEditors.find((candidate) => (
-      candidate.document.uri.toString() === block.uri.toString() &&
+      candidate.document.uri.toString() === document.uri.toString() &&
       candidate.viewColumn === sourceViewColumn
     ))
 
@@ -2657,7 +2752,7 @@ class ReviewController {
       })
     }
 
-    const range = getRangeForBlock(document, block.block)
+    const range = this.getSourceRangeForBlock(document, block.block, source.isDeletedFilePreview)
     if (range) {
       editor.selection = new vscode.Selection(range.start, range.start)
       editor.revealRange(range, vscode.TextEditorRevealType.InCenter)
@@ -2724,7 +2819,8 @@ class ReviewController {
   clearDecorations() {
     for (const editor of vscode.window.visibleTextEditors) {
       editor.setDecorations(this.pendingAddedDecoration, [])
-      editor.setDecorations(this.pendingDeletedDecoration, [])
+      editor.setDecorations(this.pendingDeletedBaselineDecoration, [])
+      editor.setDecorations(this.deletedFilePreviewDecoration, [])
       editor.setDecorations(this.pendingModifiedDecoration, [])
       editor.setDecorations(this.currentReviewDecoration, [])
       editor.setDecorations(this.acceptedDecoration, [])
@@ -2762,11 +2858,19 @@ class ReviewController {
   }
 
   refreshEditor(editor) {
+    if (editor.document.uri.scheme === DELETED_FILE_PREVIEW_SCHEME) {
+      this.refreshDeletedFilePreviewEditor(editor)
+      return
+    }
+
     const pendingAddedOptions = []
-    const pendingDeletedOptions = []
+    const pendingDeletedBaselineOptions = []
     const pendingModifiedOptions = []
     const currentReviewOptions = []
     const acceptedOptions = []
+    const decorationOptions = {
+      showBadge: Boolean(vscode.workspace.getConfiguration('codexReview').get('showBlockBadges', false))
+    }
 
     if (this.session) {
       const file = this.session.reviewFiles.get(editor.document.uri.toString())
@@ -2778,14 +2882,17 @@ class ReviewController {
           }
 
           if (block.status === 'accepted') {
-            acceptedOptions.push(createDecorationOption(range, file.label, block, 'accepted'))
+            acceptedOptions.push(createDecorationOption(range, file.label, block, 'accepted', decorationOptions))
           } else if (block.status === 'pending') {
             if (block.changeKind === 'addition') {
-              pendingAddedOptions.push(createDecorationOption(range, file.label, block, 'pending'))
+              pendingAddedOptions.push(createDecorationOption(range, file.label, block, 'pending', decorationOptions))
             } else if (block.changeKind === 'deletion') {
-              pendingDeletedOptions.push(createDecorationOption(range, file.label, block, 'pending'))
+              const deletedBaselineOption = createDeletedBaselineDecorationOption(editor.document, file.label, block)
+              if (deletedBaselineOption) {
+                pendingDeletedBaselineOptions.push(deletedBaselineOption)
+              }
             } else {
-              pendingModifiedOptions.push(createDecorationOption(range, file.label, block, 'pending'))
+              pendingModifiedOptions.push(createDecorationOption(range, file.label, block, 'pending', decorationOptions))
             }
           }
 
@@ -2805,10 +2912,27 @@ class ReviewController {
     }
 
     editor.setDecorations(this.pendingAddedDecoration, pendingAddedOptions)
-    editor.setDecorations(this.pendingDeletedDecoration, pendingDeletedOptions)
+    editor.setDecorations(this.pendingDeletedBaselineDecoration, pendingDeletedBaselineOptions)
     editor.setDecorations(this.pendingModifiedDecoration, pendingModifiedOptions)
     editor.setDecorations(this.currentReviewDecoration, currentReviewOptions)
     editor.setDecorations(this.acceptedDecoration, acceptedOptions)
+  }
+
+  refreshDeletedFilePreviewEditor(editor) {
+    editor.setDecorations(this.pendingAddedDecoration, [])
+    editor.setDecorations(this.pendingDeletedBaselineDecoration, [])
+    editor.setDecorations(this.pendingModifiedDecoration, [])
+    editor.setDecorations(this.currentReviewDecoration, [])
+    editor.setDecorations(this.acceptedDecoration, [])
+
+    const fullPreviewOptions = []
+    for (let line = 0; line < editor.document.lineCount; line += 1) {
+      fullPreviewOptions.push({
+        range: editor.document.lineAt(line).range
+      })
+    }
+
+    editor.setDecorations(this.deletedFilePreviewDecoration, fullPreviewOptions)
   }
 }
 

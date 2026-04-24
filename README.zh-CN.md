@@ -28,7 +28,9 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - 自动捕获大改动或 burst 式改动
 - 以代码块为中心进行审查，而不是只看文件级 diff
 - 在 Explorer 侧边栏按文件和代码块展示待审改动
-- 在编辑器内用醒目的 inline badge 标出 `ADDED`、`REPLACED`、`DELETED`
+- 可选地在编辑器内用 inline badge 标出 `ADDED`、`REPLACED`、`DELETED`
+- 删除块会在删除位置显示红色行内摘要，完整 baseline 代码可在 hover 和 review panel 中查看
+- 整个文件被删除时，review 该文件的删除块会打开带红色删除标识的只读 baseline 预览
 - 每个待审代码块下方提供编辑器内操作按钮：
   - `Accept`
   - `Reject`
@@ -106,6 +108,7 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 当前支持的配置主要包括：
 
 - 忽略文件模式
+- 可选的行内代码块标签
 - 常驻自动捕获
 - baseline 刷新触发条件
 - 进入 review 前的空闲等待时间

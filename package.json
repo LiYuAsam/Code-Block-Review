@@ -2,7 +2,7 @@
   "name": "code-block-review",
   "displayName": "Code Block Review",
   "description": "A VS Code extension for reviewing AI-assisted and manual code changes in block-based review sessions.",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "liyuasam",
   "license": "MIT",
   "repository": {
@@ -124,6 +124,11 @@
               "type": "string"
             },
             "description": "Glob-like file patterns to ignore entirely in Code Block Review. Ignored files do not enter auto/manual baselines, do not start capture, and do not appear in review lists. Examples: `pnpm-lock.yaml`, `**/pnpm-lock.yaml`, `**/*.snap`. Recommended for lockfiles, snapshots, generated files, and vendored assets. / 在 Code Block Review 中完全忽略的文件模式。被忽略的文件不会进入自动/手动 baseline，不会触发 capture，也不会出现在 review 列表里。示例：`pnpm-lock.yaml`、`**/pnpm-lock.yaml`、`**/*.snap`。建议用于 lockfile、快照文件、生成文件和外部产物。"
+          },
+          "codexReview.showBlockBadges": {
+            "type": "boolean",
+            "default": false,
+            "description": "Show inline ADDED, REPLACED, DELETED, and KEPT badges before highlighted review blocks. Disabled by default to keep editor decorations compact. / 在高亮的 review 代码块前显示 ADDED、REPLACED、DELETED 和 KEPT 行内标签。默认关闭，让编辑器标记更简洁。"
           }
         }
       },

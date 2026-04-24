@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.7
+
+- Improved large-file block detection so distant hunks are not collapsed into one giant review block
+- Added a `codexReview.showBlockBadges` setting, disabled by default, for inline block labels
+- Show a red inline summary for deleted blocks at the deletion location, with full baseline code available in hover and the review panel
+- Open a read-only deleted-file baseline preview with red deleted-file styling when reviewing blocks from files that no longer exist
+- Increased the contrast of the currently selected review block highlight
+
 ## 0.0.6
 
 - Fixed rejecting newly created files so they are deleted instead of being left behind as empty files

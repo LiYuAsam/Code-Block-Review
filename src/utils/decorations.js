@@ -12,14 +12,14 @@ function createReviewDecorations() {
       overviewRulerColor: 'rgba(45, 211, 111, 0.90)',
       overviewRulerLane: vscode.OverviewRulerLane.Right
     }),
-    pendingDeleted: vscode.window.createTextEditorDecorationType({
+    pendingDeletedBaseline: vscode.window.createTextEditorDecorationType({}),
+    deletedFilePreview: vscode.window.createTextEditorDecorationType({
       isWholeLine: true,
-      backgroundColor: 'rgba(239, 68, 68, 0.12)',
-      borderColor: 'rgba(239, 68, 68, 0.82)',
+      backgroundColor: 'rgba(127, 29, 29, 0.18)',
+      borderColor: 'rgba(248, 113, 113, 0.72)',
       borderStyle: 'solid',
       borderWidth: '0 0 0 3px',
-      borderRadius: '4px',
-      overviewRulerColor: 'rgba(239, 68, 68, 0.90)',
+      overviewRulerColor: 'rgba(248, 113, 113, 0.85)',
       overviewRulerLane: vscode.OverviewRulerLane.Right
     }),
     pendingModified: vscode.window.createTextEditorDecorationType({
@@ -34,12 +34,12 @@ function createReviewDecorations() {
     }),
     currentReview: vscode.window.createTextEditorDecorationType({
       isWholeLine: true,
-      backgroundColor: 'rgba(250, 204, 21, 0.18)',
-      borderColor: 'rgba(250, 204, 21, 0.95)',
+      backgroundColor: 'rgba(245, 158, 11, 0.30)',
+      borderColor: 'rgba(251, 191, 36, 1)',
       borderStyle: 'solid',
-      borderWidth: '0 0 0 4px',
+      borderWidth: '0 0 0 5px',
       borderRadius: '4px',
-      overviewRulerColor: 'rgba(250, 204, 21, 0.95)',
+      overviewRulerColor: 'rgba(251, 191, 36, 1)',
       overviewRulerLane: vscode.OverviewRulerLane.Center
     }),
     accepted: vscode.window.createTextEditorDecorationType({

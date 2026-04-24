@@ -2,6 +2,8 @@ const vscode = require('vscode')
 
 const MAX_TRACKED_FILE_BYTES = 1024 * 1024
 const MAX_DIFF_MATRIX_CELLS = 250000
+const MAX_ANCHORED_DIFF_DEPTH = 64
+const MAX_ANCHOR_LINE_FREQUENCY = 8
 const DEFAULT_IGNORED_REVIEW_DIRECTORIES = new Set([
   '.git',
   'node_modules',
@@ -444,7 +446,7 @@ function diffLines(originalLines, modifiedLines) {
 
   const middleCellCount = (middleOriginal.length + 1) * (middleModified.length + 1)
   const middleOps = middleCellCount > MAX_DIFF_MATRIX_CELLS
-    ? diffLinesFallback(middleOriginal, middleModified)
+    ? diffLinesAnchored(middleOriginal, middleModified)
     : diffLinesDynamic(middleOriginal, middleModified)
 
   return [...prefixOps, ...middleOps, ...suffixOps]
@@ -512,6 +514,191 @@ function diffLinesFallback(originalLines, modifiedLines) {
   }
 
   return ops
+}
+
+function diffLinesAnchored(originalLines, modifiedLines, depth = 0) {
+  if (originalLines.length === 0 || modifiedLines.length === 0) {
+    return diffLinesFallback(originalLines, modifiedLines)
+  }
+
+  let prefixLength = 0
+  const maxPrefix = Math.min(originalLines.length, modifiedLines.length)
+  while (prefixLength < maxPrefix && originalLines[prefixLength] === modifiedLines[prefixLength]) {
+    prefixLength += 1
+  }
+
+  let suffixLength = 0
+  const remainingOriginal = originalLines.length - prefixLength
+  const remainingModified = modifiedLines.length - prefixLength
+  const maxSuffix = Math.min(remainingOriginal, remainingModified)
+  while (
+    suffixLength < maxSuffix &&
+    originalLines[originalLines.length - 1 - suffixLength] === modifiedLines[modifiedLines.length - 1 - suffixLength]
+  ) {
+    suffixLength += 1
+  }
+
+  const prefixOps = originalLines
+    .slice(0, prefixLength)
+    .map((line) => ({ type: 'equal', line }))
+  const suffixOps = suffixLength > 0
+    ? originalLines.slice(originalLines.length - suffixLength).map((line) => ({ type: 'equal', line }))
+    : []
+  const middleOriginal = originalLines.slice(prefixLength, originalLines.length - suffixLength)
+  const middleModified = modifiedLines.slice(prefixLength, modifiedLines.length - suffixLength)
+
+  if (middleOriginal.length === 0 && middleModified.length === 0) {
+    return [...prefixOps, ...suffixOps]
+  }
+
+  const middleCellCount = (middleOriginal.length + 1) * (middleModified.length + 1)
+  if (middleCellCount <= MAX_DIFF_MATRIX_CELLS) {
+    return [
+      ...prefixOps,
+      ...diffLinesDynamic(middleOriginal, middleModified),
+      ...suffixOps
+    ]
+  }
+
+  if (depth >= MAX_ANCHORED_DIFF_DEPTH) {
+    return [
+      ...prefixOps,
+      ...diffLinesFallback(middleOriginal, middleModified),
+      ...suffixOps
+    ]
+  }
+
+  const anchors = findStableLineAnchors(middleOriginal, middleModified)
+  if (anchors.length === 0) {
+    return [
+      ...prefixOps,
+      ...diffLinesFallback(middleOriginal, middleModified),
+      ...suffixOps
+    ]
+  }
+
+  const ops = [...prefixOps]
+  let previousOriginal = 0
+  let previousModified = 0
+
+  for (const anchor of anchors) {
+    ops.push(...diffLinesAnchored(
+      middleOriginal.slice(previousOriginal, anchor.originalIndex),
+      middleModified.slice(previousModified, anchor.modifiedIndex),
+      depth + 1
+    ))
+    ops.push({ type: 'equal', line: middleOriginal[anchor.originalIndex] })
+    previousOriginal = anchor.originalIndex + 1
+    previousModified = anchor.modifiedIndex + 1
+  }
+
+  ops.push(...diffLinesAnchored(
+    middleOriginal.slice(previousOriginal),
+    middleModified.slice(previousModified),
+    depth + 1
+  ))
+  ops.push(...suffixOps)
+
+  return ops
+}
+
+function findStableLineAnchors(originalLines, modifiedLines) {
+  const originalPositionsByLine = buildLinePositions(originalLines)
+  const modifiedPositionsByLine = buildLinePositions(modifiedLines)
+  const candidates = []
+
+  for (const [line, originalPositions] of originalPositionsByLine) {
+    const modifiedPositions = modifiedPositionsByLine.get(line)
+    if (
+      !modifiedPositions ||
+      originalPositions.length !== modifiedPositions.length ||
+      originalPositions.length > MAX_ANCHOR_LINE_FREQUENCY
+    ) {
+      continue
+    }
+
+    for (let index = 0; index < originalPositions.length; index += 1) {
+      candidates.push({
+        originalIndex: originalPositions[index],
+        modifiedIndex: modifiedPositions[index]
+      })
+    }
+  }
+
+  candidates.sort((left, right) => {
+    if (left.originalIndex !== right.originalIndex) {
+      return left.originalIndex - right.originalIndex
+    }
+
+    return left.modifiedIndex - right.modifiedIndex
+  })
+
+  return longestIncreasingAnchorSequence(candidates)
+}
+
+function buildLinePositions(lines) {
+  const positionsByLine = new Map()
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const positions = positionsByLine.get(line)
+    if (positions) {
+      positions.push(index)
+    } else {
+      positionsByLine.set(line, [index])
+    }
+  }
+
+  return positionsByLine
+}
+
+function longestIncreasingAnchorSequence(candidates) {
+  if (candidates.length === 0) {
+    return []
+  }
+
+  const tailModifiedIndexes = []
+  const tailCandidateIndexes = []
+  const previousCandidateIndexes = new Array(candidates.length).fill(-1)
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]
+    const position = lowerBound(tailModifiedIndexes, candidate.modifiedIndex)
+
+    if (position > 0) {
+      previousCandidateIndexes[index] = tailCandidateIndexes[position - 1]
+    }
+
+    tailModifiedIndexes[position] = candidate.modifiedIndex
+    tailCandidateIndexes[position] = index
+  }
+
+  const sequence = []
+  let candidateIndex = tailCandidateIndexes[tailCandidateIndexes.length - 1]
+
+  while (candidateIndex !== -1 && candidateIndex !== undefined) {
+    sequence.push(candidates[candidateIndex])
+    candidateIndex = previousCandidateIndexes[candidateIndex]
+  }
+
+  sequence.reverse()
+  return sequence
+}
+
+function lowerBound(values, target) {
+  let low = 0
+  let high = values.length
+
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (values[middle] < target) {
+      low = middle + 1
+    } else {
+      high = middle
+    }
+  }
+
+  return low
 }
 
 function groupDiffOpsIntoBlocks(ops) {

@@ -1,4 +1,6 @@
 .vscode/**
+code-block-review-demo.html
+.gitignore
 .DS_Store
 **/.DS_Store
 **/node_modules/**

@@ -2,6 +2,7 @@ const vscode = require('vscode')
 
 const { formatBlockLabel } = require('./review-model')
 const MAX_INLINE_PREVIEW_CHARS = 4000
+const MAX_DELETED_BASELINE_PREVIEW_CHARS = 180
 
 function getRangeForBlock(document, block) {
   if (document.lineCount === 0) {
@@ -33,21 +34,100 @@ function createBlockTooltip(fileLabel, block) {
   return lines.join('\n')
 }
 
-function createDecorationOption(range, fileLabel, block, state) {
-  return {
+function createDecorationOption(range, fileLabel, block, state, options = {}) {
+  const decorationOption = {
     range,
-    hoverMessage: createHoverMessage(fileLabel, block, state),
-    renderOptions: {
-      before: {
-        contentText: getBlockBadgeText(block, state),
-        color: getBadgeForegroundColor(block, state),
-        backgroundColor: getBadgeBackgroundColor(block, state),
-        margin: '0 12px 0 0',
-        fontWeight: '700',
-        border: `1px solid ${getBadgeBorderColor(block, state)}`,
-        borderRadius: '999px'
-      }
+    hoverMessage: createHoverMessage(fileLabel, block, state)
+  }
+
+  if (options.showBadge) {
+    decorationOption.renderOptions = {
+      before: createBlockBadgeRenderOptions(block, state)
     }
+  }
+
+  return decorationOption
+}
+
+function createDeletedBaselineDecorationOption(document, fileLabel, block) {
+  if (block.changeKind !== 'deletion' || !Array.isArray(block.originalLines) || block.originalLines.length === 0) {
+    return null
+  }
+
+  const anchor = getDeletedBaselineAnchor(document, block)
+  if (!anchor) {
+    return null
+  }
+
+  return {
+    range: anchor.range,
+    hoverMessage: createHoverMessage(fileLabel, block, 'pending'),
+    renderOptions: {
+      [anchor.attachment]: createDeletedBaselineAttachmentRenderOptions(block)
+    }
+  }
+}
+
+function getDeletedBaselineAnchor(document, block) {
+  if (document.lineCount === 0) {
+    const range = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0))
+    return { range, attachment: 'before' }
+  }
+
+  if (block.modifiedStart > 0) {
+    const line = document.lineAt(clamp(block.modifiedStart - 1, 0, document.lineCount - 1))
+    return {
+      range: new vscode.Range(line.range.end, line.range.end),
+      attachment: 'after'
+    }
+  }
+
+  const position = new vscode.Position(0, 0)
+  return {
+    range: new vscode.Range(position, position),
+    attachment: 'before'
+  }
+}
+
+function createDeletedBaselineAttachmentRenderOptions(block) {
+  return {
+    contentText: createDeletedBaselinePreviewText(block),
+    color: '#fecaca',
+    backgroundColor: 'rgba(127, 29, 29, 0.66)',
+    border: '1px solid rgba(248, 113, 113, 0.70)',
+    margin: '0 0 0 12px',
+    fontStyle: 'italic',
+    textDecoration: 'none; padding: 0 4px;'
+  }
+}
+
+function createDeletedBaselinePreviewText(block) {
+  const lineCount = block.originalLines.length
+  const firstLine = block.originalLines.find((line) => line.trim().length > 0) ?? ''
+  const compactPreview = firstLine.trim().replace(/\s+/g, ' ')
+  const prefix = lineCount === 1 ? '- deleted: ' : `- deleted ${lineCount} lines: `
+
+  if (!compactPreview) {
+    return lineCount === 1 ? '- deleted blank line' : `- deleted ${lineCount} blank/empty lines`
+  }
+
+  const maxPreviewLength = Math.max(MAX_DELETED_BASELINE_PREVIEW_CHARS - prefix.length, 24)
+  if (compactPreview.length <= maxPreviewLength) {
+    return `${prefix}${compactPreview}`
+  }
+
+  return `${prefix}${compactPreview.slice(0, maxPreviewLength - 1)}...`
+}
+
+function createBlockBadgeRenderOptions(block, state) {
+  return {
+    contentText: getBlockBadgeText(block, state),
+    color: getBadgeForegroundColor(block, state),
+    backgroundColor: getBadgeBackgroundColor(block, state),
+    margin: '0 12px 0 0',
+    fontWeight: '700',
+    border: `1px solid ${getBadgeBorderColor(block, state)}`,
+    borderRadius: '999px'
   }
 }
 
@@ -692,6 +772,7 @@ module.exports = {
   cloneBlockForPreview,
   createBlockTooltip,
   createDecorationOption,
+  createDeletedBaselineDecorationOption,
   createReviewPanelHtml,
   createReviewPanelLoadingHtml,
   createReviewPanelUnavailableHtml,

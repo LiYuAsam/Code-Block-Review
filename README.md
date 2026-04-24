@@ -28,7 +28,9 @@ Code Block Review adds a lightweight review layer on top of your workspace:
 - Automatic capture for large or bursty edit sessions
 - Block-based review instead of file-only diff review
 - Explorer sidebar that groups pending changes by file and block
-- Inline block badges for `ADDED`, `REPLACED`, and `DELETED` changes
+- Optional inline block badges for `ADDED`, `REPLACED`, and `DELETED` changes
+- Deleted blocks show a red inline summary at the deletion point, with full baseline code available in hover and the review panel
+- Fully deleted files open a read-only baseline preview with red deleted-file styling
 - Editor-first review actions under each pending block:
   - `Accept`
   - `Reject`
@@ -106,6 +108,7 @@ In practice, the extension decides in this order:
 The extension currently supports configuration for:
 
 - ignored file globs
+- optional inline block badges
 - always-on auto capture
 - baseline refresh triggers
 - idle timing before review becomes available
