@@ -2,7 +2,7 @@
   "name": "code-block-review",
   "displayName": "Code Block Review",
   "description": "A VS Code extension for reviewing AI-assisted and manual code changes in block-based review sessions.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "liyuasam",
   "license": "MIT",
   "repository": {
@@ -93,6 +93,11 @@
         "command": "codexReview.rejectFile",
         "title": "Reject Review File",
         "category": "Code Block Review"
+      },
+      {
+        "command": "codexReview.showProfilerOutput",
+        "title": "Show Profiler Output",
+        "category": "Code Block Review"
       }
     ],
     "views": {
@@ -118,6 +123,11 @@
           },
           "description": "Glob-like file patterns to ignore entirely in Code Block Review. Ignored files do not enter auto/manual baselines, do not start capture, and do not appear in review lists. Examples: `pnpm-lock.yaml`, `**/pnpm-lock.yaml`, `**/*.snap`. Recommended for lockfiles, snapshots, generated files, and vendored assets. / 在 Code Block Review 中完全忽略的文件模式。被忽略的文件不会进入自动/手动 baseline，不会触发 capture，也不会出现在 review 列表里。示例：`pnpm-lock.yaml`、`**/pnpm-lock.yaml`、`**/*.snap`。建议用于 lockfile、快照文件、生成文件和外部产物。"
         },
+        "codexReview.profiler.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Code Block Review profiler logging in the Output Channel. Keep disabled during normal use to avoid extra logging overhead. / 启用 Code Block Review 在 Output Channel 中输出 profiler 日志。日常使用建议关闭，避免额外日志开销。"
+        },
         "codexReview.autoCapture.enabled": {
           "type": "boolean",
           "default": true,
@@ -142,6 +152,13 @@
           },
           "uniqueItems": true,
           "description": "Choose which supported editor events refresh the always-on auto-capture baseline while auto mode is enabled. Recommended default: keep both. If you feel baseline refresh is too frequent, remove `activeEditorChange` first. / 选择哪些编辑器事件会在自动模式开启时刷新常驻自动捕获使用的 baseline。推荐默认保留两个；如果觉得刷新过于频繁，可以先去掉 `activeEditorChange`。"
+        },
+        "codexReview.autoCapture.baselineRefreshCooldownSeconds": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "maximum": 3600,
+          "description": "Minimum cooldown between auto-capture baseline refreshes triggered by focus/editor-change events once a baseline already exists. `0` disables throttling. Recommended default: `10`. If you still see frequent refreshes, try `15-30`. / 在自动捕获已经有 baseline 的情况下，由窗口聚焦或编辑器切换触发的 baseline 刷新最小冷却时间。`0` 表示关闭节流。推荐默认值：`10`；如果仍觉得频繁，可尝试 `15-30`。"
         },
         "codexReview.autoCapture.captureIdleSeconds": {
           "type": "number",

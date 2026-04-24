@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.5
+
+- Significantly reduced memory and CPU overhead
+- Reduced auto-capture review startup cost by reusing a clean final workspace diff pass when entering review
+- Coalesced overlapping full-workspace scans to avoid duplicate CPU-heavy refresh work
+- Optimized reject flows to refresh the changed file instead of rescanning the whole workspace
+- Reused auto-capture baseline snapshots when starting automatic sessions to avoid unnecessary baseline copy work
+- Skipped generated and dependency directories earlier in file watching and review tracking
+- Added a `codexReview.profiler.enabled` setting so profiler Output Channel logging is disabled by default
+- Trimmed large inline hover previews while keeping full block content available in the review panel
+
 ## 0.0.4
 
 - Added clearer in-editor review actions with `Accept`, `Reject`, `Prev Block`, `Next Block`, and `Review`

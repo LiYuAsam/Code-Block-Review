@@ -1,0 +1,197 @@
+const vscode = require('vscode')
+
+const {
+  createReviewItem,
+  formatBlockLabel,
+  getReviewItemKey
+} = require('./review-model')
+const {
+  createBlockTooltip,
+  getBottomActionCodeLensRange
+} = require('./review-ui')
+
+class ReviewTreeProvider {
+  constructor(controller) {
+    this.controller = controller
+    this._onDidChangeTreeData = new vscode.EventEmitter()
+    this.onDidChangeTreeData = this._onDidChangeTreeData.event
+  }
+
+  refresh() {
+    this._onDidChangeTreeData.fire()
+  }
+
+  getTreeItem(element) {
+    return element
+  }
+
+  getChildren(element) {
+    if (!this.controller.session) {
+      if (this.controller.autoCaptureSettings.enabled && this.controller.autoCaptureState === 'armed') {
+        return [
+          new MessageItem('Auto Armed: continuously monitoring for short bursts of large or bulk edits.')
+        ]
+      }
+
+      return [
+        new MessageItem('No active review session. Run "Code Block Review: Start Review Session".')
+      ]
+    }
+
+    if (element instanceof FileItem) {
+      return element.file.blocks.map((block) => new BlockItem(element.file, block))
+    }
+
+    const files = this.controller.getFiles()
+    if (files.length === 0) {
+      const message = this.controller.state === 'capturing'
+        ? (this.controller.sessionMode === 'auto' && this.controller.autoCaptureReviewPending
+            ? 'Automatic capture is ready. Click the status bar or run "Stop Capture And Review" to open review.'
+            : 'Capture is active. Edit some files, then stop capture to review.')
+        : 'No review blocks found yet.'
+      return [new MessageItem(message)]
+    }
+
+    return files.map((file) => new FileItem(file))
+  }
+}
+
+class ReviewBlockCodeLensProvider {
+  constructor(controller) {
+    this.controller = controller
+    this._onDidChangeCodeLenses = new vscode.EventEmitter()
+    this.onDidChangeCodeLenses = this._onDidChangeCodeLenses.event
+  }
+
+  refresh() {
+    this._onDidChangeCodeLenses.fire()
+  }
+
+  provideCodeLenses(document) {
+    if (this.controller.state !== 'reviewing' || !this.controller.session) {
+      return []
+    }
+
+    const file = this.controller.session.reviewFiles.get(document.uri.toString())
+    if (!file) {
+      return []
+    }
+
+    const pendingItems = this.controller.getOrderedPendingBlockItems()
+    const pendingIndexByKey = new Map(
+      pendingItems.map((item, index) => [getReviewItemKey(item), index])
+    )
+    const codeLenses = []
+    for (const block of file.blocks) {
+      if (block.status !== 'pending') {
+        continue
+      }
+
+      const range = getBottomActionCodeLensRange(document, block)
+      if (!range) {
+        continue
+      }
+
+      const args = [createReviewItem(file.uri, block)]
+      codeLenses.push(new vscode.CodeLens(range, {
+        command: 'codexReview.acceptBlockAndAdvance',
+        title: '$(pass-filled) Accept',
+        arguments: args,
+        tooltip: 'Accept this review block and jump to the next pending block'
+      }))
+
+      codeLenses.push(new vscode.CodeLens(range, {
+        command: 'codexReview.rejectBlockAndAdvance',
+        title: '$(error) Reject',
+        arguments: args,
+        tooltip: 'Reject this review block and jump to the next pending block'
+      }))
+
+      const itemKey = getReviewItemKey(args[0])
+      const currentIndex = itemKey ? pendingIndexByKey.get(itemKey) ?? -1 : -1
+      const previousItem = currentIndex > 0 ? pendingItems[currentIndex - 1] : null
+      const nextItem = currentIndex >= 0 && currentIndex < pendingItems.length - 1
+        ? pendingItems[currentIndex + 1]
+        : null
+
+      if (previousItem) {
+        codeLenses.push(new vscode.CodeLens(range, {
+          command: 'codexReview.openPreviousPendingBlock',
+          title: '$(arrow-left) Prev Block',
+          arguments: args,
+          tooltip: 'Jump to the previous pending review block'
+        }))
+      }
+
+      if (nextItem) {
+        codeLenses.push(new vscode.CodeLens(range, {
+          command: 'codexReview.openNextPendingBlock',
+          title: '$(arrow-right) Next Block',
+          arguments: args,
+          tooltip: 'Jump to the next pending review block'
+        }))
+      }
+
+      codeLenses.push(new vscode.CodeLens(range, {
+        command: 'codexReview.previewBlock',
+        title: '$(open-preview) Review',
+        arguments: args,
+        tooltip: 'Open the dedicated review panel for this block'
+      }))
+    }
+
+    return codeLenses
+  }
+}
+
+class MessageItem extends vscode.TreeItem {
+  constructor(label) {
+    super(label, vscode.TreeItemCollapsibleState.None)
+    this.contextValue = 'message'
+  }
+}
+
+class FileItem extends vscode.TreeItem {
+  constructor(file) {
+    const pendingCount = file.blocks.filter((block) => block.status === 'pending').length
+    const acceptedCount = file.blocks.filter((block) => block.status === 'accepted').length
+    const description = pendingCount > 0 ? `${pendingCount} pending` : `${acceptedCount} accepted`
+
+    super(file.label, vscode.TreeItemCollapsibleState.Expanded)
+    this.file = file
+    this.kind = 'file'
+    this.uri = file.uri
+    this.description = description
+    this.contextValue = 'file'
+    this.iconPath = new vscode.ThemeIcon(pendingCount > 0 ? 'diff-multiple' : 'pass')
+    this.command = {
+      command: 'codexReview.openReviewPanel',
+      title: 'Open Review Panel',
+      arguments: [this]
+    }
+  }
+}
+
+class BlockItem extends vscode.TreeItem {
+  constructor(file, block) {
+    const lineLabel = formatBlockLabel(block)
+    super(lineLabel, vscode.TreeItemCollapsibleState.None)
+    this.kind = 'block'
+    this.uri = file.uri
+    this.blockId = block.id
+    this.description = block.status
+    this.tooltip = createBlockTooltip(file.label, block)
+    this.contextValue = 'block'
+    this.iconPath = new vscode.ThemeIcon(block.status === 'accepted' ? 'pass' : 'diff')
+    this.command = {
+      command: 'codexReview.openBlock',
+      title: 'Open Review Block',
+      arguments: [this]
+    }
+  }
+}
+
+module.exports = {
+  ReviewBlockCodeLensProvider,
+  ReviewTreeProvider
+}
