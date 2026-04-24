@@ -4,6 +4,8 @@ const AUTO_CAPTURE_TRIGGER_WINDOW_FOCUS = 'windowFocus'
 const AUTO_CAPTURE_TRIGGER_ACTIVE_EDITOR_CHANGE = 'activeEditorChange'
 const GIT_ACTIVITY_SUPPRESSION_WINDOW_MS = 4000
 const DELETED_FILE_PREVIEW_SCHEME = 'codex-review-deleted'
+const WORKSPACE_RESCAN_DEBOUNCE_MS = 200
+const DOCUMENT_CHANGE_RESCAN_DEBOUNCE_MS = 1000
 const {
   buildReviewBlocks,
   clearIgnoredReviewGlobsCache,
@@ -778,14 +780,6 @@ class ReviewController {
 
   async recordAutoCaptureEvidence(event) {
     const uriString = event.document.uri.toString()
-    if (!this.autoCaptureCandidateBaselineByUri.has(uriString)) {
-      const idleBaseline = this.autoCaptureBaselineEntriesByUri.get(uriString)
-      const candidateBaseline = idleBaseline
-        ? await readBaselineEntryText(idleBaseline)
-        : { kind: 'missing' }
-      this.autoCaptureCandidateBaselineByUri.set(uriString, candidateBaseline)
-    }
-
     this.autoCaptureEvidence.push({
       timestamp: Date.now(),
       uri: uriString,
@@ -888,7 +882,7 @@ class ReviewController {
 
   scheduleAutoCaptureObservationTimeout() {
     if (this.autoCaptureObservationTimer) {
-      return
+      clearTimeout(this.autoCaptureObservationTimer)
     }
 
     this.autoCaptureObservationTimer = setTimeout(() => {
@@ -908,7 +902,6 @@ class ReviewController {
     }
 
     await this.absorbAutoCaptureEvidenceIntoBaseline()
-    await this.ensureAutoCaptureReady({ silent: true })
     this.updateStatusBar()
     await this.syncContexts()
   }
@@ -993,7 +986,7 @@ class ReviewController {
     this.scheduleAutoCaptureFilesystemProbe(uri)
   }
 
-  scheduleWorkspaceRescan(reason = 'watcher') {
+  scheduleWorkspaceRescan(reason = 'watcher', delayMs = WORKSPACE_RESCAN_DEBOUNCE_MS) {
     this.pendingWorkspaceRescanReason = reason
     if (this.workspaceRescanTimer) {
       return
@@ -1004,7 +997,7 @@ class ReviewController {
       const pendingReason = this.pendingWorkspaceRescanReason ?? 'watcher'
       this.pendingWorkspaceRescanReason = null
       void this.flushScheduledWorkspaceRescan(pendingReason)
-    }, 200)
+    }, delayMs)
   }
 
   async flushScheduledWorkspaceRescan(reason) {
@@ -1182,18 +1175,19 @@ class ReviewController {
       return false
     }
 
-    await this.ensureAutoCaptureReady({ silent: true })
+    if (!this.isAutoCaptureReadyForDocumentChange()) {
+      if (!this.autoCaptureBaselineRefreshPromise) {
+        void this.ensureAutoCaptureReady({ silent: true })
+      }
+      return false
+    }
 
     if (this.autoCaptureState !== 'armed' || this.state !== 'idle') {
       return false
     }
 
     const uriString = event.document.uri.toString()
-    const candidateBaselineText = await this.getAutoCaptureCandidateBaselineText(uriString)
-    if (
-      this.autoCaptureCandidateBaselineByUri.has(uriString) &&
-      event.document.getText() === candidateBaselineText
-    ) {
+    if (await this.isDocumentBackAtAutoCaptureBaseline(event.document)) {
       this.dropAutoCaptureEvidenceForUri(uriString)
       this.updateStatusBar()
       await this.syncContexts()
@@ -1217,6 +1211,23 @@ class ReviewController {
 
     this.scheduleAutoCaptureObservationTimeout()
     return false
+  }
+
+  isAutoCaptureReadyForDocumentChange() {
+    return this.autoCaptureState === 'armed' &&
+      this.state === 'idle' &&
+      this.autoCaptureBaselineEntriesByUri.size > 0 &&
+      !this.autoCaptureBaselineRefreshPromise
+  }
+
+  async isDocumentBackAtAutoCaptureBaseline(document) {
+    const uriString = document.uri.toString()
+    if (!this.autoCaptureCandidateBaselineByUri.has(uriString)) {
+      return false
+    }
+
+    const candidateBaselineText = await this.getAutoCaptureCandidateBaselineText(uriString)
+    return document.getText() === candidateBaselineText
   }
 
   async startSession(options = {}) {
@@ -1547,13 +1558,8 @@ class ReviewController {
     this.markWorkspaceUriDirty(uriString)
 
     if (this.state === 'reviewing') {
-      await this.rebuildFile(uriString, event.document)
-      this.treeProvider.refresh()
-      this.blockActionProvider.refresh()
+      this.scheduleWorkspaceRescan('document-change', DOCUMENT_CHANGE_RESCAN_DEBOUNCE_MS)
       this.updateStatusBar()
-      this.refreshAllVisibleEditors()
-      await this.refreshReviewPanel()
-      await this.maybeAutoComplete()
       return
     }
 
