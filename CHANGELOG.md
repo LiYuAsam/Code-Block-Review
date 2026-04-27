@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.9
+
+- Avoid treating old files from newly expanded scoped workspace roots as new pending files during auto capture
+
 ## 0.0.8
 
 - Reduced typing overhead by avoiding blocking auto-capture baseline work during normal edits

@@ -6,6 +6,7 @@ const GIT_ACTIVITY_SUPPRESSION_WINDOW_MS = 4000
 const DELETED_FILE_PREVIEW_SCHEME = 'codex-review-deleted'
 const WORKSPACE_RESCAN_DEBOUNCE_MS = 200
 const DOCUMENT_CHANGE_RESCAN_DEBOUNCE_MS = 1000
+const AUTO_CAPTURE_UNBASELINED_FILE_RECENCY_MS = 2 * 60 * 1000
 const {
   buildReviewBlocks,
   clearIgnoredReviewGlobsCache,
@@ -1335,7 +1336,8 @@ class ReviewController {
       silent: true,
       baselineEntries,
       baselineOverrides,
-      adoptedBaselineSnapshotDirectory
+      adoptedBaselineSnapshotDirectory,
+      initialTouchedUris: observedEvidence.map((entry) => entry.uri)
     })
 
     if (!started || !this.session) {
@@ -1384,6 +1386,14 @@ class ReviewController {
       const hadBaseline = this.hasSessionBaseline(uriString)
 
       if (!hadBaseline && currentText === null) {
+        continue
+      }
+
+      if (
+        !hadBaseline &&
+        this.sessionMode === 'auto' &&
+        !(await this.shouldTreatAutoMissingBaselineAsNewFile(uri))
+      ) {
         continue
       }
 
@@ -1487,7 +1497,8 @@ class ReviewController {
       silent = false,
       baselineEntries = null,
       baselineOverrides = null,
-      adoptedBaselineSnapshotDirectory = null
+      adoptedBaselineSnapshotDirectory = null,
+      initialTouchedUris = []
     } = options
 
     if (this.state !== 'idle') {
@@ -1510,8 +1521,10 @@ class ReviewController {
       this.dirtyWorkspaceUris.clear()
       const baselineSnapshotDirectory = adoptedBaselineSnapshotDirectory ?? await createSessionBaselineSnapshotDirectory()
       this.sessionMode = mode
+      const startedAtMs = Date.now()
       this.session = {
-        startedAt: new Date().toISOString(),
+        startedAt: new Date(startedAtMs).toISOString(),
+        startedAtMs,
         baselineEntriesByUri: new Map(),
         baselineSnapshotDirectory,
         touchedUris: new Set(),
@@ -1519,6 +1532,14 @@ class ReviewController {
         finalWorkspaceDiffClean: false
       }
       this.markReviewDataChanged()
+
+      if (mode === 'auto' && Array.isArray(initialTouchedUris)) {
+        for (const uriString of initialTouchedUris) {
+          if (uriString) {
+            this.session.touchedUris.add(uriString)
+          }
+        }
+      }
 
       if (baselineEntries instanceof Map) {
         for (const [key, entry] of baselineEntries.entries()) {
@@ -1941,11 +1962,13 @@ class ReviewController {
           }
 
           if (this.sessionMode === 'auto') {
-            // Auto sessions already start from the always-on idle baseline snapshot.
-            // Any workspace file that is still missing here is most likely a file
-            // created during the current AI burst, so keep an empty baseline and let
-            // later diff passes treat it as a new-file addition.
-            this.setSessionBaselineMissing(key)
+            // Scoped auto baselines may not include every file in large workspaces.
+            // Only treat missing-baseline files as new when they were touched by
+            // this capture or look freshly changed; otherwise leave them out so
+            // old files from newly discovered roots do not become pending review.
+            if (await this.shouldTreatAutoMissingBaselineAsNewFile(uri)) {
+              this.setSessionBaselineMissing(key)
+            }
           } else {
             const text = await readTrackedTextFromUri(uri)
             if (text !== null) {
@@ -1966,6 +1989,42 @@ class ReviewController {
       })
     }
 
+  }
+
+  async shouldTreatAutoMissingBaselineAsNewFile(uri) {
+    if (!this.session || this.sessionMode !== 'auto' || !uri) {
+      return false
+    }
+
+    const uriString = uri.toString()
+    if (
+      this.session.touchedUris.has(uriString) ||
+      this.session.reviewFiles.has(uriString) ||
+      this.dirtyWorkspaceUris.has(uriString)
+    ) {
+      return true
+    }
+
+    if (vscode.workspace.textDocuments.some((document) => (
+      document.uri.toString() === uriString &&
+      isTrackableDocument(document) &&
+      document.isDirty
+    ))) {
+      return true
+    }
+
+    if (uri.scheme !== 'file') {
+      return false
+    }
+
+    const startedAtMs = this.session.startedAtMs ?? Date.parse(this.session.startedAt) ?? Date.now()
+    const recentCutoff = startedAtMs - AUTO_CAPTURE_UNBASELINED_FILE_RECENCY_MS
+    try {
+      const stat = await vscode.workspace.fs.stat(uri)
+      return stat.mtime >= recentCutoff
+    } catch {
+      return false
+    }
   }
 
   async scanWorkspaceForChanges(reason = 'scan') {
@@ -2060,6 +2119,16 @@ class ReviewController {
         }
 
         if (!hadBaseline) {
+          if (
+            this.sessionMode === 'auto' &&
+            !(await this.shouldTreatAutoMissingBaselineAsNewFile(uri))
+          ) {
+            if (scanSession.reviewFiles.delete(uriString)) {
+              this.markReviewDataChanged()
+            }
+            continue
+          }
+
           this.setSessionBaselineMissing(uriString)
         }
 
