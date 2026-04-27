@@ -2,6 +2,7 @@ const vscode = require('vscode')
 
 const { uriExists } = require('../review-model')
 const { getRangeForBlock } = require('../ui/review-panel-ui')
+const { t } = require('../utils/i18n')
 
 const DELETED_FILE_PREVIEW_SCHEME = 'codex-review-deleted'
 
@@ -43,7 +44,7 @@ const deletedPreviewControllerMethods = {
   provideDeletedFilePreviewContent(uri) {
     const blockInfo = this.findDeletedFilePreviewBlock(uri)
     if (!blockInfo) {
-      return '// Deleted file preview is no longer available.'
+      return t('deletedPreview.unavailable')
     }
 
     return blockInfo.block.originalText || ''

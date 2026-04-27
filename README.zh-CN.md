@@ -25,13 +25,15 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 ## 功能特性
 
 - 手动启动 review session：`Code Block Review: Start Review Session`
-- 自动捕获大改动或 burst 式改动
-- 以代码块为中心进行审查，而不是只看文件级 diff
-- 在 Explorer 侧边栏按文件和代码块展示待审改动
+- 常驻自动捕获：识别 AI / 工具式的大改动、跨文件改动和 burst 式改动
+- 以代码块为中心审查改动，而不是只看文件级 diff
+- 在 Explorer 侧边栏按文件和代码块展示待审改动，并支持从侧边栏打开 review panel
+- 在编辑器内用不同颜色区分新增、修改、删除和当前 review 代码块；修改块使用蓝色标识
 - 可选地在编辑器内用 inline badge 标出 `ADDED`、`REPLACED`、`DELETED`
+- review panel 中对 replace 类型代码块支持 token 级差异高亮
 - 删除块会在删除位置显示红色行内摘要，完整 baseline 代码可在 hover 和 review panel 中查看
 - 整个文件被删除时，review 该文件的删除块会打开带红色删除标识的只读 baseline 预览
-- 每个待审代码块下方提供编辑器内操作按钮：
+- 每个待审代码块下方提供编辑器内 CodeLens 操作：
   - `Accept`
   - `Reject`
   - `Prev Block`
@@ -42,6 +44,11 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
   - 接受 / 拒绝当前代码块
   - 接受 / 拒绝当前文件
   - 接受 / 拒绝全部剩余文件
+- 文件级和全部文件级 Accept / Reject 只会处理剩余 pending 代码块，不会重复改动已处理过的 block
+- 自动捕获支持大工作区范围控制：整个 workspace、当前项目、或近期触达的项目
+- Ready 状态下如果会话过大，会提示尽快 review 或 skip，以释放内存和临时 baseline 快照
+- capture / Ready 状态下检测到底层 Git HEAD/ref 变化时，会自动释放旧会话，避免切分支后继续 review 过期改动
+- 根据 VS Code/Cursor 显示语言本地化设置页、命令、状态栏、通知、Explorer 树和 CodeLens 文案
 - 支持忽略 lockfile、生成文件、快照文件等噪音改动
 
 ## Demo 演示页
@@ -78,6 +85,10 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - 通知里的 `Start Review` 会直接进入 review，并跳到第一条 pending block
 - 你仍然可以随时打开专门的 review panel
 - 或者什么都不做，让这轮改动静默吸收到新的 baseline 中
+- 默认 Ready 等待时间是 120 秒
+- 将 `codexReview.autoCapture.reviewOfferSeconds` 设置为 `0` 时，会关闭自动超时，Ready 会一直等待你手动 review 或 skip
+- 如果 Ready 会话包含大量 pending block、review 文本或 baseline 快照，扩展会弹出 warning 提醒尽快处理
+- 如果这期间 Git HEAD/ref 发生变化，例如切分支，capture / Ready 会话会自动释放并回到 Auto Armed
 
 ### 自动捕获判定方式
 
@@ -93,6 +104,10 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
   统计观察窗口内触达的唯一行数；同一行上的重复编辑不会无限累加。
 - `burstEventWindowMilliseconds` + `burstMinEvents`
   这是高频事件的辅助信号。现在它不会单独触发 capture，只会轻微放宽多文件或 burst 行数阈值。
+- `autoCapture.scope`
+  控制大工作区中 baseline 的扫描范围。默认 `touchedProjects` 会覆盖当前项目和近期触达过的项目，同时避免把旧的未改动文件误纳入 review。
+- `autoCapture.projectRootMarkers`
+  用于识别子项目根目录，默认包含 `package.json`、`go.mod`、`pom.xml`、`Cargo.toml`、`.git` 等常见标志。
 
 实际判定顺序可以简化成下面这样：
 
@@ -113,8 +128,9 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - baseline 刷新触发条件
 - 面向大型多项目工作区的可选范围化自动捕获 baseline
 - 进入 review 前的空闲等待时间
-- Ready 状态的等待时长
+- Ready 状态的等待时长，默认 120 秒；`codexReview.autoCapture.reviewOfferSeconds = 0` 会关闭自动跳过，并持续保留当前 review session 直到手动处理
 - burst 检测阈值
+- profiler 诊断日志开关
 
 完整配置请直接在扩展设置面板中查看。
 

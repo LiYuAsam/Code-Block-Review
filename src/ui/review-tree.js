@@ -9,6 +9,7 @@ const {
   createBlockTooltip,
   getBottomActionCodeLensRange
 } = require('./review-panel-ui')
+const { t } = require('../utils/i18n')
 
 class ReviewTreeProvider {
   constructor(controller) {
@@ -34,12 +35,12 @@ class ReviewTreeProvider {
     if (!this.controller.session) {
       if (this.controller.autoCaptureSettings.enabled && this.controller.autoCaptureState === 'armed') {
         return [
-          new MessageItem('Auto Armed: continuously monitoring for short bursts of large or bulk edits.')
+          new MessageItem(t('tree.autoArmed'))
         ]
       }
 
       return [
-        new MessageItem('No active review session. Run "Code Block Review: Start Review Session".')
+        new MessageItem(t('tree.noSession'))
       ]
     }
 
@@ -52,9 +53,9 @@ class ReviewTreeProvider {
     if (files.length === 0) {
       const message = this.controller.state === 'capturing'
         ? (this.controller.sessionMode === 'auto' && this.controller.autoCaptureReviewPending
-            ? 'Automatic capture is ready. Click the status bar or run "Stop Capture And Review" to open review.'
-            : 'Capture is active. Edit some files, then stop capture to review.')
-        : 'No review blocks found yet.'
+            ? t('tree.autoReady')
+            : t('tree.capturing'))
+        : t('tree.noBlocks')
       return [new MessageItem(message)]
     }
 
@@ -112,16 +113,16 @@ class ReviewBlockCodeLensProvider {
       const args = [createReviewItem(file.uri, block)]
       codeLenses.push(new vscode.CodeLens(range, {
         command: 'codexReview.acceptBlockAndAdvance',
-        title: '$(pass-filled) Accept',
+        title: `$(pass-filled) ${t('action.accept')}`,
         arguments: args,
-        tooltip: 'Accept this review block and jump to the next pending block'
+        tooltip: t('codelens.acceptTooltip')
       }))
 
       codeLenses.push(new vscode.CodeLens(range, {
         command: 'codexReview.rejectBlockAndAdvance',
-        title: '$(error) Reject',
+        title: `$(error) ${t('action.reject')}`,
         arguments: args,
-        tooltip: 'Reject this review block and jump to the next pending block'
+        tooltip: t('codelens.rejectTooltip')
       }))
 
       const itemKey = getReviewItemKey(args[0])
@@ -134,26 +135,26 @@ class ReviewBlockCodeLensProvider {
       if (previousItem) {
         codeLenses.push(new vscode.CodeLens(range, {
           command: 'codexReview.openPreviousPendingBlock',
-          title: '$(arrow-left) Prev Block',
+          title: `$(arrow-left) ${t('action.prevBlock')}`,
           arguments: args,
-          tooltip: 'Jump to the previous pending review block'
+          tooltip: t('codelens.prevTooltip')
         }))
       }
 
       if (nextItem) {
         codeLenses.push(new vscode.CodeLens(range, {
           command: 'codexReview.openNextPendingBlock',
-          title: '$(arrow-right) Next Block',
+          title: `$(arrow-right) ${t('action.nextBlock')}`,
           arguments: args,
-          tooltip: 'Jump to the next pending review block'
+          tooltip: t('codelens.nextTooltip')
         }))
       }
 
       codeLenses.push(new vscode.CodeLens(range, {
         command: 'codexReview.previewBlock',
-        title: '$(open-preview) Review',
+        title: `$(open-preview) ${t('action.review')}`,
         arguments: args,
-        tooltip: 'Open the dedicated review panel for this block'
+        tooltip: t('codelens.reviewTooltip')
       }))
     }
 
@@ -172,7 +173,9 @@ class FileItem extends vscode.TreeItem {
   constructor(file) {
     const pendingCount = file.blocks.filter((block) => block.status === 'pending').length
     const acceptedCount = file.blocks.filter((block) => block.status === 'accepted').length
-    const description = pendingCount > 0 ? `${pendingCount} pending` : `${acceptedCount} accepted`
+    const description = pendingCount > 0
+      ? t('tree.pending', { count: pendingCount })
+      : t('tree.accepted', { count: acceptedCount })
 
     super(file.label, vscode.TreeItemCollapsibleState.Expanded)
     this.file = file
@@ -183,7 +186,7 @@ class FileItem extends vscode.TreeItem {
     this.iconPath = new vscode.ThemeIcon(pendingCount > 0 ? 'diff-multiple' : 'pass')
     this.command = {
       command: 'codexReview.openReviewPanel',
-      title: 'Open Review Panel',
+      title: t('tree.openPanel'),
       arguments: [this]
     }
   }
@@ -202,7 +205,7 @@ class BlockItem extends vscode.TreeItem {
     this.iconPath = new vscode.ThemeIcon(block.status === 'accepted' ? 'pass' : 'diff')
     this.command = {
       command: 'codexReview.openBlock',
-      title: 'Open Review Block',
+      title: t('tree.openBlock'),
       arguments: [this]
     }
   }

@@ -24,12 +24,12 @@ function createReviewDecorations() {
     }),
     pendingModified: vscode.window.createTextEditorDecorationType({
       isWholeLine: true,
-      backgroundColor: 'rgba(34, 197, 94, 0.10)',
-      borderColor: 'rgba(34, 197, 94, 0.82)',
+      backgroundColor: 'rgba(14, 165, 233, 0.26)',
+      borderColor: 'rgba(56, 189, 248, 1)',
       borderStyle: 'solid',
       borderWidth: '0 0 0 3px',
       borderRadius: '4px',
-      overviewRulerColor: 'rgba(34, 197, 94, 0.90)',
+      overviewRulerColor: 'rgba(56, 189, 248, 1)',
       overviewRulerLane: vscode.OverviewRulerLane.Right
     }),
     currentReview: vscode.window.createTextEditorDecorationType({

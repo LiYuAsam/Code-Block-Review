@@ -25,13 +25,15 @@ Code Block Review adds a lightweight review layer on top of your workspace:
 ## Features
 
 - Manual review sessions with `Code Block Review: Start Review Session`
-- Automatic capture for large or bursty edit sessions
+- Always-on automatic capture for AI/tool-like large edits, multi-file edits, and bursty edit sessions
 - Block-based review instead of file-only diff review
-- Explorer sidebar that groups pending changes by file and block
+- Explorer sidebar that groups pending changes by file and block, with quick access to the review panel
+- Distinct editor highlights for added, modified, deleted, and currently selected review blocks; modified blocks use blue styling
 - Optional inline block badges for `ADDED`, `REPLACED`, and `DELETED` changes
+- Token-level difference highlighting for replaced blocks inside the review panel
 - Deleted blocks show a red inline summary at the deletion point, with full baseline code available in hover and the review panel
 - Fully deleted files open a read-only baseline preview with red deleted-file styling
-- Editor-first review actions under each pending block:
+- Editor-first CodeLens review actions under each pending block:
   - `Accept`
   - `Reject`
   - `Prev Block`
@@ -42,6 +44,11 @@ Code Block Review adds a lightweight review layer on top of your workspace:
   - accept / reject block
   - accept / reject current file
   - accept / reject all remaining files
+- File-level and all-files Accept / Reject actions only handle remaining pending blocks, so already handled blocks stay unchanged
+- Scoped auto-capture baselines for large workspaces: entire workspace, active project, or recently touched projects
+- Large Ready sessions warn when they keep significant review text or baseline snapshots around
+- Capture / Ready sessions are released when the underlying Git HEAD/ref changes, avoiding stale reviews after branch switches
+- Localized settings, command titles, status bar text, notifications, Explorer tree text, and CodeLens labels based on the VS Code/Cursor display language
 - Ignore rules for lockfiles, generated files, snapshots, and other noisy outputs
 
 ## Demo
@@ -78,6 +85,10 @@ After capture goes idle:
 - the notification action starts review and jumps to the first pending block
 - you can still open the dedicated review panel at any time
 - or let the session expire and silently merge into the new baseline
+- the default Ready wait time is 120 seconds
+- set `codexReview.autoCapture.reviewOfferSeconds` to `0` to keep Ready sessions waiting indefinitely until you review or skip them manually
+- large Ready sessions show a warning if they hold many pending blocks, review text, or baseline snapshots
+- if Git HEAD/ref changes during capture or Ready, the session is released and the extension returns to Auto Armed
 
 ### Auto-capture heuristics
 
@@ -93,6 +104,10 @@ Auto capture uses a short observation window instead of trying to classify every
   Counts unique touched lines inside the observation window, so repeated edits on the same line do not keep inflating the score.
 - `burstEventWindowMilliseconds` + `burstMinEvents`
   A rapid-event assist signal. High event density no longer triggers capture by itself; it only slightly relaxes nearby multi-file or burst-line thresholds.
+- `autoCapture.scope`
+  Controls how much of a large workspace is scanned into the baseline. The default `touchedProjects` covers the active project and recently touched project roots while avoiding old untouched files becoming review candidates.
+- `autoCapture.projectRootMarkers`
+  Helps detect subproject roots. Defaults include common markers such as `package.json`, `go.mod`, `pom.xml`, `Cargo.toml`, and `.git`.
 
 In practice, the extension decides in this order:
 
@@ -113,8 +128,9 @@ The extension currently supports configuration for:
 - baseline refresh triggers
 - optional scoped auto-capture baselines for large multi-project workspaces
 - idle timing before review becomes available
-- review offer timeout
+- review offer timeout, defaulting to 120 seconds; `codexReview.autoCapture.reviewOfferSeconds = 0` disables auto-dismiss and keeps the current review session in memory until handled
 - burst-detection thresholds
+- profiler diagnostic logging
 
 Open the extension settings panel for the full list.
 

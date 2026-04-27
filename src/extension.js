@@ -6,6 +6,9 @@ const GIT_ACTIVITY_SUPPRESSION_WINDOW_MS = 4000
 const WORKSPACE_RESCAN_DEBOUNCE_MS = 200
 const DOCUMENT_CHANGE_RESCAN_DEBOUNCE_MS = 1000
 const AUTO_CAPTURE_UNBASELINED_FILE_RECENCY_MS = 2 * 60 * 1000
+const LARGE_REVIEW_SESSION_PENDING_BLOCK_WARNING = 200
+const LARGE_REVIEW_SESSION_TEXT_WARNING_BYTES = 5 * 1024 * 1024
+const LARGE_REVIEW_SESSION_SNAPSHOT_WARNING_BYTES = 20 * 1024 * 1024
 const {
   buildReviewBlocks,
   clearIgnoredReviewGlobsCache,
@@ -50,6 +53,7 @@ const {
   readBaselineEntryText
 } = require('./utils/baseline-snapshots')
 const { createReviewDecorations } = require('./ui/decorations')
+const { pluralKey, t } = require('./utils/i18n')
 const { ReviewProfiler } = require('./utils/profiler')
 const {
   WORKSPACE_EXCLUDE_GLOB,
@@ -60,6 +64,8 @@ const {
   getWorkspaceBaselineKey,
   getWorkspaceKeyForUri,
   isGitMetadataUri,
+  readGitRepositoryStateForRoot,
+  readGitRepositoryStateForUri,
   shouldRunFullWorkspaceScan
 } = require('./utils/workspace')
 
@@ -113,6 +119,7 @@ class ReviewController {
     this.recentSaveEventsByUri = new Map()
     this.autoCaptureReviewPending = false
     this.autoCaptureReviewPromptNonce = 0
+    this.autoCaptureLargeSessionWarningShown = false
     this.autoCaptureSettings = getAutoCaptureSettings()
     this.deletedFilePreviewProvider = {
       provideTextDocumentContent: (uri) => this.provideDeletedFilePreviewContent(uri)
@@ -817,6 +824,7 @@ class ReviewController {
     this.autoCaptureCandidateBaselineByUri = new Map()
     this.autoCaptureEvidence = []
     this.autoCaptureReviewPending = false
+    this.autoCaptureLargeSessionWarningShown = false
     this.autoCaptureReviewPromptNonce += 1
     this.lastAutoCaptureBaselineRefreshAt = 0
     this.autoCaptureBaselineStatus = 'idle'
@@ -930,6 +938,7 @@ class ReviewController {
       this.autoCaptureReviewPending = false
       this.clearAutoReviewOfferTimer()
       this.autoCaptureReviewPromptNonce += 1
+      this.autoCaptureLargeSessionWarningShown = false
     }
     this.bumpAutoCaptureStopTimer()
   }
@@ -940,6 +949,10 @@ class ReviewController {
     }
 
     this.clearAutoReviewOfferTimer()
+    if (this.autoCaptureSettings.reviewOfferMs <= 0) {
+      return
+    }
+
     this.autoCaptureReviewOfferTimer = setTimeout(() => {
       if (this.sessionMode === 'auto' && this.state === 'capturing' && this.autoCaptureReviewPending) {
         void this.completeReview(null, { silent: true })
@@ -953,10 +966,20 @@ class ReviewController {
     }
 
     const promptNonce = ++this.autoCaptureReviewPromptNonce
+    const suffix = this.autoCaptureSettings.reviewOfferMs <= 0
+      ? t('message.autoDismissDisabledSuffix')
+      : ''
+    const startReviewAction = t('action.startReview')
+    const skipAction = t('action.skip')
+    const pendingCount = this.getPendingBlockCount()
     void vscode.window.showInformationMessage(
-      `Code Block Review captured ${this.getPendingBlockCount()} pending block${this.getPendingBlockCount() === 1 ? '' : 's'}.`,
-      'Start Review',
-      'Skip'
+      t('message.autoCaptured', {
+        count: pendingCount,
+        blockWord: pluralKey(pendingCount, 'unit.block.singular', 'unit.block.plural'),
+        suffix
+      }),
+      startReviewAction,
+      skipAction
     ).then((selection) => {
       if (promptNonce !== this.autoCaptureReviewPromptNonce) {
         return
@@ -966,15 +989,202 @@ class ReviewController {
         return
       }
 
-      if (selection === 'Start Review') {
+      if (selection === startReviewAction) {
         void this.enterReadyReviewAndOpenFirstPendingBlock()
         return
       }
 
-      if (selection === 'Skip') {
+      if (selection === skipAction) {
         void this.completeReview(null, { silent: true })
       }
     })
+  }
+
+  async maybeWarnLargeAutoReviewSession() {
+    if (
+      this.autoCaptureLargeSessionWarningShown ||
+      this.sessionMode !== 'auto' ||
+      this.state !== 'capturing' ||
+      !this.autoCaptureReviewPending ||
+      !this.session
+    ) {
+      return
+    }
+
+    const estimate = await this.estimateReviewSessionSize()
+    const warningReasons = []
+    if (estimate.pendingBlocks >= LARGE_REVIEW_SESSION_PENDING_BLOCK_WARNING) {
+      warningReasons.push(t('unit.pendingBlocks', { count: estimate.pendingBlocks }))
+    }
+    if (estimate.reviewTextBytes >= LARGE_REVIEW_SESSION_TEXT_WARNING_BYTES) {
+      warningReasons.push(t('unit.reviewText', { size: formatByteCount(estimate.reviewTextBytes) }))
+    }
+    if (estimate.snapshotBytes >= LARGE_REVIEW_SESSION_SNAPSHOT_WARNING_BYTES) {
+      warningReasons.push(t('unit.snapshots', { size: formatByteCount(estimate.snapshotBytes) }))
+    }
+
+    if (warningReasons.length === 0) {
+      return
+    }
+
+    this.autoCaptureLargeSessionWarningShown = true
+    const startReviewAction = t('action.startReview')
+    const skipAction = t('action.skip')
+    void vscode.window.showWarningMessage(
+      t('message.largeSessionWarning', { reasons: warningReasons.join(', ') }),
+      startReviewAction,
+      skipAction
+    ).then((selection) => {
+      if (this.sessionMode !== 'auto' || this.state !== 'capturing' || !this.autoCaptureReviewPending) {
+        return
+      }
+
+      if (selection === startReviewAction) {
+        void this.enterReadyReviewAndOpenFirstPendingBlock()
+        return
+      }
+
+      if (selection === skipAction) {
+        void this.completeReview(null, { silent: true })
+      }
+    })
+  }
+
+  async estimateReviewSessionSize() {
+    const estimate = {
+      pendingBlocks: 0,
+      reviewTextBytes: 0,
+      snapshotBytes: 0
+    }
+
+    if (!this.session) {
+      return estimate
+    }
+
+    for (const file of this.session.reviewFiles.values()) {
+      for (const block of file.blocks) {
+        if (block.status !== 'pending') {
+          continue
+        }
+
+        estimate.pendingBlocks += 1
+        estimate.reviewTextBytes += Buffer.byteLength(block.originalText || '', 'utf8')
+        estimate.reviewTextBytes += Buffer.byteLength(block.modifiedText || '', 'utf8')
+      }
+    }
+
+    const snapshotPaths = new Set()
+    for (const entry of this.session.baselineEntriesByUri.values()) {
+      if (entry?.kind === 'snapshot' && entry.snapshotPath) {
+        snapshotPaths.add(entry.snapshotPath)
+      }
+    }
+
+    for (const snapshotPath of snapshotPaths) {
+      try {
+        const stat = await vscode.workspace.fs.stat(vscode.Uri.file(snapshotPath))
+        estimate.snapshotBytes += stat.size
+      } catch {}
+    }
+
+    return estimate
+  }
+
+  async completeAutoReadySessionIfEmpty(message = null) {
+    if (this.sessionMode !== 'auto' || this.state !== 'capturing' || !this.autoCaptureReviewPending) {
+      return false
+    }
+
+    if (this.getPendingBlockCount() > 0) {
+      return false
+    }
+
+    await this.completeReview(message, { silent: true })
+    return true
+  }
+
+  async captureSessionGitStates() {
+    const statesByRoot = new Map()
+    const sourceUris = []
+
+    if (this.session) {
+      for (const uriString of this.session.baselineEntriesByUri.keys()) {
+        sourceUris.push(uriString)
+      }
+      for (const uriString of this.session.touchedUris) {
+        sourceUris.push(uriString)
+      }
+      for (const file of this.session.reviewFiles.values()) {
+        sourceUris.push(file.uri.toString())
+      }
+    }
+
+    for (const document of vscode.workspace.textDocuments) {
+      if (isTrackableDocument(document)) {
+        sourceUris.push(document.uri.toString())
+      }
+    }
+
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      sourceUris.push(folder.uri.toString())
+    }
+
+    const seenUris = new Set()
+    for (const uriString of sourceUris) {
+      if (!uriString || seenUris.has(uriString)) {
+        continue
+      }
+      seenUris.add(uriString)
+
+      let uri = null
+      try {
+        uri = vscode.Uri.parse(uriString)
+      } catch {
+        continue
+      }
+
+      const state = await readGitRepositoryStateForUri(uri)
+      if (state && !statesByRoot.has(state.repoRoot)) {
+        statesByRoot.set(state.repoRoot, state)
+      }
+    }
+
+    return statesByRoot
+  }
+
+  async handleSessionGitStateChange(reason) {
+    if (
+      this.state !== 'capturing' ||
+      !this.session ||
+      !this.session.gitStatesByRoot ||
+      this.session.gitStatesByRoot.size === 0
+    ) {
+      return false
+    }
+
+    for (const [repoRoot, previousState] of this.session.gitStatesByRoot.entries()) {
+      let currentState = null
+      try {
+        currentState = await readGitRepositoryStateForRoot(vscode.Uri.parse(repoRoot))
+      } catch {}
+
+      if (currentState?.signature === previousState.signature) {
+        continue
+      }
+
+      const wasAutoSession = this.sessionMode === 'auto'
+      this.profiler.logSnapshot('gitStateChanged:releaseSession', {
+        reason,
+        repoRoot
+      })
+      await this.completeReview(
+        t('message.gitStateChanged'),
+        { silent: wasAutoSession }
+      )
+      return true
+    }
+
+    return false
   }
 
   async recordAutoCaptureEvidence(event) {
@@ -1182,6 +1392,9 @@ class ReviewController {
 
     if (isGitMetadataUri(uri)) {
       this.markRecentGitActivity(uri)
+      if (this.session) {
+        this.scheduleWorkspaceRescan(`git-${kind}`, 0)
+      }
       return
     }
 
@@ -1227,6 +1440,10 @@ class ReviewController {
     }
 
     await this.scanWorkspaceForChanges(reason)
+    if (await this.completeAutoReadySessionIfEmpty()) {
+      return
+    }
+
     this.treeProvider.refresh()
     this.blockActionProvider.refresh()
     this.updateStatusBar()
@@ -1497,7 +1714,7 @@ class ReviewController {
 
     if (this.state !== 'idle') {
       if (!silent) {
-        void vscode.window.showInformationMessage('A review session is already active.')
+        void vscode.window.showInformationMessage(t('message.sessionAlreadyActive'))
       }
       return false
     }
@@ -1523,6 +1740,7 @@ class ReviewController {
         baselineSnapshotDirectory,
         touchedUris: new Set(),
         reviewFiles: new Map(),
+        gitStatesByRoot: new Map(),
         finalWorkspaceDiffClean: false
       }
       this.markReviewDataChanged()
@@ -1569,16 +1787,18 @@ class ReviewController {
       }
 
       await this.captureWorkspaceBaseline()
+      this.session.gitStatesByRoot = await this.captureSessionGitStates()
 
       this.state = 'capturing'
       this.autoCaptureReviewPending = false
+      this.autoCaptureLargeSessionWarningShown = false
       await this.syncContexts()
       this.treeProvider.refresh()
       this.blockActionProvider.refresh()
       this.updateStatusBar()
       this.refreshAllVisibleEditors()
       if (!silent) {
-        void vscode.window.showInformationMessage('Code Block Review capture started.')
+        void vscode.window.showInformationMessage(t('message.captureStarted'))
       }
 
       return true
@@ -1599,7 +1819,7 @@ class ReviewController {
 
     if (this.state !== 'capturing') {
       if (!silent) {
-        void vscode.window.showInformationMessage('There is no capture session to stop.')
+        void vscode.window.showInformationMessage(t('message.noCaptureSession'))
       }
       return false
     }
@@ -1631,12 +1851,15 @@ class ReviewController {
 
       const pending = this.getPendingBlockCount()
       if (pending === 0) {
-        await this.completeReview('No review blocks were found. Session closed.', { silent })
+        await this.completeReview(t('message.noBlocksSessionClosed'), { silent })
         return true
       }
 
       if (!silent) {
-        void vscode.window.showInformationMessage(`Code Block Review entered review mode with ${pending} pending block${pending === 1 ? '' : 's'}.`)
+        void vscode.window.showInformationMessage(t('message.enteredReview', {
+          count: pending,
+          blockWord: pluralKey(pending, 'unit.block.singular', 'unit.block.plural')
+        }))
       }
 
       return true
@@ -1708,6 +1931,7 @@ class ReviewController {
     this.blockActionProvider.refresh()
     this.updateStatusBar()
     await this.syncContexts()
+    await this.maybeWarnLargeAutoReviewSession()
     this.promptAutoReviewOffer()
     this.scheduleAutoReviewOfferTimer()
   }
@@ -1788,6 +2012,10 @@ class ReviewController {
     const profile = this.profiler.startMark('refreshReview')
     try {
       await this.scanWorkspaceForChanges('manual-refresh')
+      if (await this.completeAutoReadySessionIfEmpty()) {
+        return
+      }
+
       this.treeProvider.refresh()
       this.blockActionProvider.refresh()
       this.updateStatusBar()
@@ -2064,6 +2292,13 @@ class ReviewController {
     }
 
     const profile = this.profiler.startMark('scanWorkspaceForChanges', { reason })
+    if (await this.handleSessionGitStateChange(reason)) {
+      this.profiler.finishMark(profile, {
+        gitStateChanged: 'true'
+      })
+      return
+    }
+
     const scanSession = this.session
     const dirtyUrisAtScanStart = new Set(this.dirtyWorkspaceUris)
     const workspaceFiles = await this.listTrackableWorkspaceFiles()
@@ -2222,7 +2457,7 @@ class ReviewController {
 
     const firstPendingItem = this.getOrderedPendingBlockItems()[0] ?? null
     if (!firstPendingItem) {
-      void vscode.window.showInformationMessage('No pending review blocks are available.')
+      void vscode.window.showInformationMessage(t('message.noPendingBlocks'))
       return false
     }
 
@@ -2274,7 +2509,7 @@ class ReviewController {
     }
 
     if (!targetItem) {
-      void vscode.window.showInformationMessage('No pending review blocks are available.')
+      void vscode.window.showInformationMessage(t('message.noPendingBlocks'))
       return
     }
 
@@ -2298,11 +2533,11 @@ class ReviewController {
 
       const saved = await document.save()
       if (!saved) {
-        void vscode.window.showWarningMessage(`Failed to save ${toWorkspaceLabel(uri)}.`)
+        void vscode.window.showWarningMessage(t('message.failedToSave', { file: toWorkspaceLabel(uri) }))
       }
       return saved
     } catch {
-      void vscode.window.showWarningMessage(`Failed to save ${toWorkspaceLabel(uri)}.`)
+      void vscode.window.showWarningMessage(t('message.failedToSave', { file: toWorkspaceLabel(uri) }))
       return false
     }
   }
@@ -2418,7 +2653,7 @@ class ReviewController {
   async rejectBlock(item) {
     const block = this.findBlockItem(item)
     if (!block) {
-      void vscode.window.showWarningMessage('Could not find the selected review block.')
+      void vscode.window.showWarningMessage(t('message.couldNotFindBlock'))
       return
     }
 
@@ -2431,7 +2666,7 @@ class ReviewController {
       : await this.applyTextToUri(block.uri, nextText)
 
     if (!applied) {
-      void vscode.window.showWarningMessage('Failed to reject block.')
+      void vscode.window.showWarningMessage(t('message.failedToRejectBlock'))
       return
     }
 
@@ -2443,7 +2678,7 @@ class ReviewController {
     await this.refreshReviewPanel()
 
     if (currentText === nextText) {
-      void vscode.window.showInformationMessage('Reject did not change the file. The block may already match the baseline.')
+      void vscode.window.showInformationMessage(t('message.rejectNoChange'))
     }
   }
 
@@ -2465,8 +2700,17 @@ class ReviewController {
       return
     }
 
+    const pendingBlocks = file.blocks.filter((block) => block.status === 'pending')
+    if (pendingBlocks.length === 0) {
+      await this.maybeAutoComplete()
+      return
+    }
+
     const uriString = file.uri.toString()
     const document = await safeOpenDocument(uriString)
+    for (const block of pendingBlocks) {
+      block.status = 'accepted'
+    }
     await this.setSessionBaselineText(uriString, document ? document.getText() : '')
     this.session.reviewFiles.delete(uriString)
     this.session.touchedUris.delete(uriString)
@@ -2488,21 +2732,52 @@ class ReviewController {
       return
     }
 
-    const baselineText = await this.getSessionBaselineText(file.uri.toString())
-    const shouldDeleteFile = this.hasSessionMissingBaseline(file.uri.toString())
-    const applied = await this.rejectUriToBaseline(file.uri, baselineText)
+    const result = await this.rejectPendingBlocksInFile(file)
 
-    if (!applied) {
-      void vscode.window.showWarningMessage('Failed to reject file.')
+    if (!result.applied) {
+      void vscode.window.showWarningMessage(t('message.failedToRejectFile'))
       return
     }
 
-    if (shouldDeleteFile) {
+    if (result.deleted) {
       await this.finishRejectedMissingFile(file.uri)
     } else {
       await this.refreshChangedReviewFile(file.uri)
     }
     await this.refreshReviewPanel()
+  }
+
+  async rejectPendingBlocksInFile(file) {
+    if (!file || !this.session) {
+      return { applied: false, deleted: false }
+    }
+
+    const pendingBlocks = file.blocks
+      .filter((block) => block.status === 'pending')
+      .sort((left, right) => {
+        if (left.modifiedStart !== right.modifiedStart) {
+          return right.modifiedStart - left.modifiedStart
+        }
+
+        return right.modifiedEnd - left.modifiedEnd
+      })
+
+    if (pendingBlocks.length === 0) {
+      return { applied: true, deleted: false }
+    }
+
+    const document = await safeOpenDocument(file.uri.toString())
+    let nextText = document ? document.getText() : ''
+    for (const block of pendingBlocks) {
+      nextText = rejectBlockFromDocumentText(nextText, block)
+    }
+
+    const deleted = nextText === '' && this.hasSessionMissingBaseline(file.uri.toString())
+    const applied = nextText === ''
+      ? await this.rejectUriToBaseline(file.uri, nextText)
+      : await this.applyTextToUri(file.uri, nextText)
+
+    return { applied, deleted }
   }
 
   async refreshChangedReviewFile(uri) {
@@ -2531,7 +2806,7 @@ class ReviewController {
       await this.saveReviewDocument(uri)
     }
 
-    await this.completeReview('All remaining review files were skipped.')
+    await this.completeReview(t('message.acceptedRemaining'))
   }
 
   async rejectAllFiles() {
@@ -2539,16 +2814,16 @@ class ReviewController {
       return
     }
 
-    for (const file of this.session.reviewFiles.values()) {
-      const baselineText = await this.getSessionBaselineText(file.uri.toString())
-      const applied = await this.rejectUriToBaseline(file.uri, baselineText)
-      if (!applied) {
-        void vscode.window.showWarningMessage(`Failed to reject ${toWorkspaceLabel(file.uri)}.`)
+    const files = [...this.session.reviewFiles.values()]
+    for (const file of files) {
+      const result = await this.rejectPendingBlocksInFile(file)
+      if (!result.applied) {
+        void vscode.window.showWarningMessage(t('message.failedToRejectNamedFile', { file: toWorkspaceLabel(file.uri) }))
         return
       }
     }
 
-    await this.completeReview('All remaining review files were rejected.')
+    await this.completeReview(t('message.rejectedRemaining'))
   }
 
   findFileItem(item) {
@@ -2593,7 +2868,7 @@ class ReviewController {
     }
 
     if (this.getPendingBlockCount() === 0) {
-      await this.completeReview('All review blocks have been handled. Session closed.')
+      await this.completeReview(t('message.allHandled'))
     }
   }
 
@@ -2606,6 +2881,22 @@ Object.assign(
   reviewPanelControllerMethods,
   statusControllerMethods
 )
+
+function formatByteCount(bytes) {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
 
 module.exports = {
   activate,

@@ -1,29 +1,32 @@
 const vscode = require('vscode')
+const { t } = require('../utils/i18n')
 
 const statusControllerMethods = {
   updateStatusBar() {
     if (this.state === 'capturing' && this.session) {
       if (this.sessionMode === 'auto' && this.autoCaptureReviewPending) {
-        this.statusBarItem.text = `$(diff) Code Block Review: ${this.getPendingBlockCount()} Ready`
+        this.statusBarItem.text = t('status.ready', { count: this.getPendingBlockCount() })
         this.statusBarItem.command = 'codexReview.enterReadyReview'
-        this.statusBarItem.tooltip = 'Open review now. If you do nothing, this automatic capture will be dismissed after a short grace period and the current workspace will become the new baseline.'
+        this.statusBarItem.tooltip = this.autoCaptureSettings.reviewOfferMs <= 0
+          ? t('tooltip.readyIndefinite')
+          : t('tooltip.readyTimed')
         this.statusBarItem.show()
         return
       }
 
-      this.statusBarItem.text = `$(record) Code Block Review: Capturing ${this.session.touchedUris.size}`
+      this.statusBarItem.text = t('status.capturing', { count: this.session.touchedUris.size })
       this.statusBarItem.command = 'codexReview.stopSession'
       this.statusBarItem.tooltip = this.sessionMode === 'auto'
-        ? 'Open review mode for this automatic capture'
-        : 'Stop capture and enter review mode'
+        ? t('tooltip.openAutoCaptureReview')
+        : t('tooltip.stopCapture')
       this.statusBarItem.show()
       return
     }
 
     if (this.state === 'reviewing') {
-      this.statusBarItem.text = `$(diff) Code Block Review: ${this.getPendingBlockCount()} Pending`
+      this.statusBarItem.text = t('status.pending', { count: this.getPendingBlockCount() })
       this.statusBarItem.command = 'codexReview.openReviewPanel'
-      this.statusBarItem.tooltip = 'Open the Code Block Review Panel'
+      this.statusBarItem.tooltip = t('tooltip.openReviewPanel')
       this.statusBarItem.show()
       return
     }
@@ -32,33 +35,33 @@ const statusControllerMethods = {
       this.statusBarItem.text = this.getAutoCaptureStatusBarText()
       this.statusBarItem.command = 'codexReview.startSession'
       this.statusBarItem.tooltip = [
-        'Automatic capture is continuously monitoring for short bursts of large or bulk edits.',
+        t('tooltip.autoMonitoring'),
         this.getAutoCaptureBaselineStatusTooltip()
       ].filter(Boolean).join('\n')
       this.statusBarItem.show()
       return
     }
 
-    this.statusBarItem.text = '$(sparkle) Code Block Review: Start'
+    this.statusBarItem.text = t('status.start')
     this.statusBarItem.command = 'codexReview.startSession'
-    this.statusBarItem.tooltip = 'Start a review capture session'
+    this.statusBarItem.tooltip = t('tooltip.startCapture')
     this.statusBarItem.show()
   },
 
   getAutoCaptureStatusBarText() {
     if (this.autoCaptureBaselineRefreshPromise || this.autoCaptureBaselineStatus === 'syncing') {
-      return '$(sync~spin) Code Block Review: Baseline Syncing'
+      return t('status.baselineSyncing')
     }
 
     if (this.autoCaptureBaselineStatus === 'failed') {
-      return '$(warning) Code Block Review: Baseline Failed'
+      return t('status.baselineFailed')
     }
 
     if (this.autoCaptureBaselineEntriesByUri.size === 0) {
-      return '$(pulse) Code Block Review: Baseline Pending'
+      return t('status.baselinePending')
     }
 
-    return '$(pulse) Code Block Review: Auto Armed'
+    return t('status.autoArmed')
   },
 
   getAutoCaptureBaselineStatusTooltip() {
@@ -67,10 +70,10 @@ const statusControllerMethods = {
     }
 
     if (this.autoCaptureBaselineEntriesByUri.size > 0) {
-      return `Auto-capture baseline is ready with ${this.autoCaptureBaselineEntriesByUri.size} files.`
+      return t('tooltip.baselineReady', { count: this.autoCaptureBaselineEntriesByUri.size })
     }
 
-    return 'Auto-capture baseline has not finished syncing yet.'
+    return t('tooltip.baselineNotReady')
   },
 
   async syncContexts() {

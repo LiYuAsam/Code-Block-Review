@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.0
+
+- Highlight token-level differences in the review panel comparison for replaced code blocks
+- Limit file-level and all-files Accept/Reject actions to the remaining pending blocks so previously handled blocks stay unchanged
+- Use blue editor highlights and badges for modified blocks so additions, replacements, deletions, and the current review block are easier to distinguish
+- Allow `codexReview.autoCapture.reviewOfferSeconds` to be set to `0` so Ready auto-capture sessions wait indefinitely for manual review or skip
+- Increase the default Ready auto-capture review offer timeout from 60 seconds to 120 seconds
+- Warn when an auto-capture Ready session is large enough to keep significant review text or baseline snapshots around
+- Automatically release auto-capture Ready sessions when refreshed diffs no longer contain pending review blocks
+- Release capture/Ready sessions when the underlying Git repository HEAD/ref changes, avoiding stale reviews after branch switches or similar destructive Git operations
+- Localize extension settings, commands, status bar text, review prompts, Explorer tree text, and CodeLens labels based on the current VS Code/Cursor display language
+- 🎉 Mark this release as the first feature-complete preview after stabilizing automatic capture, scoped workspace baselines, deleted-file reviews, and block-level accept/reject flows
+
 ## 0.0.10
 
 - Fix deleted files being misclassified as one-line replacements, which prevented opening the deleted-file baseline preview

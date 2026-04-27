@@ -12,12 +12,13 @@ const {
   createReviewPanelLoadingHtml,
   createReviewPanelUnavailableHtml
 } = require('../ui/review-panel-ui')
+const { t } = require('../utils/i18n')
 
 const reviewPanelControllerMethods = {
   async showReviewPanel(item) {
     const block = this.findBlockItem(item)
     if (!block) {
-      void vscode.window.showInformationMessage('Could not open review panel for this block.')
+      void vscode.window.showInformationMessage(t('message.couldNotFindBlock'))
       return
     }
 

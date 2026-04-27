@@ -102,6 +102,135 @@ function isGitMetadataUri(uri) {
   return normalizedPath.endsWith('/.git') || normalizedPath.includes('/.git/')
 }
 
+async function readGitRepositoryStateForUri(uri) {
+  if (!uri || uri.scheme !== 'file') {
+    return null
+  }
+
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri)
+  const workspaceRoot = workspaceFolder?.uri?.scheme === 'file'
+    ? workspaceFolder.uri.fsPath
+    : null
+  let currentDirectory = await getUriDirectoryPath(uri)
+
+  while (currentDirectory && (!workspaceRoot || isPathInsideOrEqual(currentDirectory, workspaceRoot))) {
+    const gitMarkerPath = path.join(currentDirectory, '.git')
+    const state = await readGitRepositoryStateFromMarker(currentDirectory, gitMarkerPath)
+    if (state) {
+      return state
+    }
+
+    if (workspaceRoot && currentDirectory === workspaceRoot) {
+      break
+    }
+
+    const parentDirectory = path.dirname(currentDirectory)
+    if (parentDirectory === currentDirectory) {
+      break
+    }
+    currentDirectory = parentDirectory
+  }
+
+  return null
+}
+
+async function readGitRepositoryStateForRoot(repoRootUri) {
+  if (!repoRootUri || repoRootUri.scheme !== 'file') {
+    return null
+  }
+
+  return readGitRepositoryStateFromMarker(repoRootUri.fsPath, path.join(repoRootUri.fsPath, '.git'))
+}
+
+async function getUriDirectoryPath(uri) {
+  try {
+    const stat = await vscode.workspace.fs.stat(uri)
+    if ((stat.type & vscode.FileType.Directory) !== 0) {
+      return uri.fsPath
+    }
+  } catch {}
+
+  return path.dirname(uri.fsPath)
+}
+
+async function readGitRepositoryStateFromMarker(repoRootPath, gitMarkerPath) {
+  let gitDirectory = null
+  try {
+    const markerStat = await vscode.workspace.fs.stat(vscode.Uri.file(gitMarkerPath))
+    if ((markerStat.type & vscode.FileType.Directory) !== 0) {
+      gitDirectory = gitMarkerPath
+    } else if ((markerStat.type & vscode.FileType.File) !== 0) {
+      const markerText = await readTextFile(gitMarkerPath)
+      const match = markerText.match(/^gitdir:\s*(.+)\s*$/i)
+      if (match) {
+        gitDirectory = path.resolve(repoRootPath, match[1].trim())
+      }
+    }
+  } catch {
+    return null
+  }
+
+  if (!gitDirectory) {
+    return null
+  }
+
+  const head = (await readTextFile(path.join(gitDirectory, 'HEAD'))).trim()
+  if (!head) {
+    return null
+  }
+
+  const refName = head.startsWith('ref:') ? head.slice(4).trim() : ''
+  const commonDirectory = await getGitCommonDirectory(gitDirectory)
+  const ref = refName ? await readGitRefValue(commonDirectory, refName) : ''
+  const signature = hashText(`${head}\n${ref}`)
+
+  return {
+    repoRoot: vscode.Uri.file(repoRootPath).toString(),
+    head,
+    ref,
+    signature
+  }
+}
+
+async function getGitCommonDirectory(gitDirectory) {
+  const commonDirText = (await readTextFile(path.join(gitDirectory, 'commondir'))).trim()
+  if (!commonDirText) {
+    return gitDirectory
+  }
+
+  return path.resolve(gitDirectory, commonDirText)
+}
+
+async function readGitRefValue(commonDirectory, refName) {
+  const looseRef = (await readTextFile(path.join(commonDirectory, refName))).trim()
+  if (looseRef) {
+    return looseRef
+  }
+
+  const packedRefs = await readTextFile(path.join(commonDirectory, 'packed-refs'))
+  for (const line of packedRefs.split(/\r?\n/)) {
+    if (!line || line.startsWith('#') || line.startsWith('^')) {
+      continue
+    }
+
+    const [hash, name] = line.trim().split(/\s+/, 2)
+    if (name === refName) {
+      return hash || ''
+    }
+  }
+
+  return ''
+}
+
+async function readTextFile(filePath) {
+  try {
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath))
+    return Buffer.from(bytes).toString('utf8')
+  } catch {
+    return ''
+  }
+}
+
 function shouldRunFullWorkspaceScan(reason) {
   return !reason ||
     reason === 'manual-refresh' ||
@@ -170,5 +299,7 @@ module.exports = {
   getWorkspaceBaselineKey,
   getWorkspaceKeyForUri,
   isGitMetadataUri,
+  readGitRepositoryStateForRoot,
+  readGitRepositoryStateForUri,
   shouldRunFullWorkspaceScan
 }

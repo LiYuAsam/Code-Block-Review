@@ -1,8 +1,10 @@
 const vscode = require('vscode')
 
 const { formatBlockLabel } = require('../review-model')
+const { t } = require('../utils/i18n')
 const MAX_INLINE_PREVIEW_CHARS = 4000
 const MAX_DELETED_BASELINE_PREVIEW_CHARS = 180
+const MAX_PANEL_DIFF_HIGHLIGHT_MATRIX_CELLS = 300000
 
 function getRangeForBlock(document, block) {
   if (document.lineCount === 0) {
@@ -136,16 +138,16 @@ function createHoverMessage(fileLabel, block, state) {
   markdown.isTrusted = false
   markdown.appendMarkdown(`**${escapeMarkdown(fileLabel)}**  \n`)
   markdown.appendMarkdown(`**${escapeMarkdown(formatBlockLabel(block))}**  \n`)
-  markdown.appendMarkdown(`State: \`${state}\`  \n`)
-  markdown.appendMarkdown(`Type: \`${block.changeKind}\``)
+  markdown.appendMarkdown(`${escapeMarkdown(t('hover.state'))}: \`${state}\`  \n`)
+  markdown.appendMarkdown(`${escapeMarkdown(t('hover.type'))}: \`${block.changeKind}\``)
 
   if (block.modifiedText) {
-    markdown.appendMarkdown('\n\n**Current**\n')
+    markdown.appendMarkdown(`\n\n**${escapeMarkdown(t('hover.current'))}**\n`)
     markdown.appendCodeblock(createInlinePreviewText(block.modifiedText), '')
   }
 
   if (block.originalText) {
-    markdown.appendMarkdown('\n\n**Baseline**\n')
+    markdown.appendMarkdown(`\n\n**${escapeMarkdown(t('hover.baseline'))}**\n`)
     markdown.appendCodeblock(createInlinePreviewText(block.originalText), '')
   }
 
@@ -161,7 +163,7 @@ function createInlinePreviewText(text, emptyText = '') {
     return text
   }
 
-  return `${text.slice(0, MAX_INLINE_PREVIEW_CHARS)}\n... truncated; open the review panel for the full block.`
+  return `${text.slice(0, MAX_INLINE_PREVIEW_CHARS)}\n${t('hover.truncated')}`
 }
 
 function getBlockBadgeText(block, state) {
@@ -193,7 +195,7 @@ function getBadgeForegroundColor(block, state) {
     return '#fecaca'
   }
 
-  return '#bbf7d0'
+  return '#7dd3fc'
 }
 
 function getBadgeBackgroundColor(block, state) {
@@ -209,7 +211,7 @@ function getBadgeBackgroundColor(block, state) {
     return 'rgba(220, 38, 38, 0.28)'
   }
 
-  return 'rgba(22, 163, 74, 0.22)'
+  return 'rgba(2, 132, 199, 0.36)'
 }
 
 function getBadgeBorderColor(block, state) {
@@ -225,7 +227,7 @@ function getBadgeBorderColor(block, state) {
     return 'rgba(252, 165, 165, 0.55)'
   }
 
-  return 'rgba(134, 239, 172, 0.55)'
+  return 'rgba(56, 189, 248, 0.78)'
 }
 
 function escapeMarkdown(text) {
@@ -291,6 +293,100 @@ function createPanelChangeSummaryHtml(block) {
   }).join('')
 }
 
+function createComparisonCodeHtml(block, baselineText, currentText) {
+  if (block.changeKind !== 'modification') {
+    return {
+      baseline: escapeHtml(baselineText),
+      current: escapeHtml(currentText)
+    }
+  }
+
+  return createInlineDiffCodeHtml(baselineText, currentText)
+}
+
+function createInlineDiffCodeHtml(originalText, modifiedText) {
+  const originalTokens = tokenizeForPanelDiff(originalText)
+  const modifiedTokens = tokenizeForPanelDiff(modifiedText)
+  const matrixCells = (originalTokens.length + 1) * (modifiedTokens.length + 1)
+
+  if (
+    originalTokens.length === 0 ||
+    modifiedTokens.length === 0 ||
+    matrixCells > MAX_PANEL_DIFF_HIGHLIGHT_MATRIX_CELLS
+  ) {
+    return {
+      baseline: escapeHtml(originalText),
+      current: escapeHtml(modifiedText)
+    }
+  }
+
+  const cols = modifiedTokens.length + 1
+  const matrix = new Uint32Array((originalTokens.length + 1) * cols)
+
+  for (let row = originalTokens.length - 1; row >= 0; row -= 1) {
+    for (let col = modifiedTokens.length - 1; col >= 0; col -= 1) {
+      const offset = row * cols + col
+      if (originalTokens[row] === modifiedTokens[col]) {
+        matrix[offset] = matrix[(row + 1) * cols + col + 1] + 1
+      } else {
+        matrix[offset] = Math.max(matrix[(row + 1) * cols + col], matrix[row * cols + col + 1])
+      }
+    }
+  }
+
+  const baselineParts = []
+  const currentParts = []
+  let row = 0
+  let col = 0
+
+  while (row < originalTokens.length && col < modifiedTokens.length) {
+    if (originalTokens[row] === modifiedTokens[col]) {
+      const html = escapeHtml(originalTokens[row])
+      baselineParts.push(html)
+      currentParts.push(html)
+      row += 1
+      col += 1
+      continue
+    }
+
+    if (matrix[(row + 1) * cols + col] >= matrix[row * cols + col + 1]) {
+      baselineParts.push(wrapDiffToken(originalTokens[row], 'removed'))
+      row += 1
+      continue
+    }
+
+    currentParts.push(wrapDiffToken(modifiedTokens[col], 'added'))
+    col += 1
+  }
+
+  while (row < originalTokens.length) {
+    baselineParts.push(wrapDiffToken(originalTokens[row], 'removed'))
+    row += 1
+  }
+
+  while (col < modifiedTokens.length) {
+    currentParts.push(wrapDiffToken(modifiedTokens[col], 'added'))
+    col += 1
+  }
+
+  return {
+    baseline: baselineParts.join(''),
+    current: currentParts.join('')
+  }
+}
+
+function tokenizeForPanelDiff(text) {
+  return String(text || '').match(/(\s+|[A-Za-z0-9_$]+|[^\sA-Za-z0-9_$]+)/g) ?? []
+}
+
+function wrapDiffToken(token, tone) {
+  if (/^\s+$/.test(token)) {
+    return escapeHtml(token)
+  }
+
+  return `<span class="diff-token ${tone}">${escapeHtml(token)}</span>`
+}
+
 function createReviewPanelHtml(previewData, isLiveBlock, navigation, newPendingCount = 0) {
   const { label, block } = previewData
   const headlineHtml = createPanelChangeSummaryHtml(block)
@@ -298,6 +394,7 @@ function createReviewPanelHtml(previewData, isLiveBlock, navigation, newPendingC
   const statusLabel = isLiveBlock ? (block.status === 'accepted' ? 'Accepted' : 'Pending review') : 'Already handled'
   const currentText = block.modifiedText || '// No current content for this block.'
   const baselineText = block.originalText || '// No baseline content for this block.'
+  const comparisonCodeHtml = createComparisonCodeHtml(block, baselineText, currentText)
   const currentTitle = block.changeKind === 'deletion' ? 'Current Result' : 'Current Code'
   const baselineTitle = block.changeKind === 'addition' ? 'Baseline (empty)' : 'Removed / Baseline Code'
   const primaryActionDisabled = isLiveBlock ? '' : 'disabled'
@@ -519,6 +616,25 @@ function createReviewPanelHtml(previewData, isLiveBlock, navigation, newPendingC
       word-break: break-word;
     }
 
+    .diff-token {
+      border-radius: 4px;
+      padding: 0 2px;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+
+    .diff-token.removed {
+      color: #fecaca;
+      background: rgba(239, 68, 68, 0.32);
+      box-shadow: inset 0 -1px 0 rgba(248, 113, 113, 0.70);
+    }
+
+    .diff-token.added {
+      color: #bbf7d0;
+      background: rgba(34, 197, 94, 0.28);
+      box-shadow: inset 0 -1px 0 rgba(74, 222, 128, 0.65);
+    }
+
     .toolbar {
       display: grid;
       gap: 12px;
@@ -666,7 +782,7 @@ function createReviewPanelHtml(previewData, isLiveBlock, navigation, newPendingC
           <span>${escapeHtml(baselineTitle)}</span>
           <span>${escapeHtml(`${Math.max(block.originalLines.length, 1)} line${block.originalLines.length === 1 ? '' : 's'}`)}</span>
         </div>
-        <pre>${escapeHtml(baselineText)}</pre>
+        <pre>${comparisonCodeHtml.baseline}</pre>
       </article>
 
       <article class="block added">
@@ -674,7 +790,7 @@ function createReviewPanelHtml(previewData, isLiveBlock, navigation, newPendingC
           <span>${escapeHtml(currentTitle)}</span>
           <span>${escapeHtml(`${Math.max(block.modifiedLines.length, 1)} line${block.modifiedLines.length === 1 ? '' : 's'}`)}</span>
         </div>
-        <pre>${escapeHtml(currentText)}</pre>
+        <pre>${comparisonCodeHtml.current}</pre>
       </article>
     </section>
   </div>

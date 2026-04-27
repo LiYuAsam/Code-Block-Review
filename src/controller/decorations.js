@@ -5,6 +5,7 @@ const {
   createDeletedBaselineDecorationOption,
   getRangeForBlock
 } = require('../ui/review-panel-ui')
+const { t } = require('../utils/i18n')
 const { DELETED_FILE_PREVIEW_SCHEME } = require('./deleted-preview')
 
 const decorationControllerMethods = {
@@ -96,7 +97,7 @@ const decorationControllerMethods = {
           ) {
             currentReviewOptions.push({
               range,
-              hoverMessage: new vscode.MarkdownString('Currently selected in Code Block Review Panel')
+              hoverMessage: new vscode.MarkdownString(t('decorations.currentReviewTooltip'))
             })
           }
         }

@@ -208,7 +208,7 @@ function getAutoCaptureSettings() {
     projectRootMarkers,
     baselineRefreshCooldownMs: clampNumber(config.get('baselineRefreshCooldownSeconds', 10), 0, 3600) * 1000,
     captureIdleMs: clampNumber(config.get('captureIdleSeconds', 4), 1, 600) * 1000,
-    reviewOfferMs: clampNumber(config.get('reviewOfferSeconds', 60), 1, 600) * 1000,
+    reviewOfferMs: clampNumber(config.get('reviewOfferSeconds', 120), 0, 600) * 1000,
     observationWindowMs: clampNumber(config.get('observationWindowSeconds', 1.2), 0.1, 60) * 1000,
     burstEventWindowMs: clampNumber(config.get('burstEventWindowMilliseconds', 500), 50, 10000),
     thresholds: {
