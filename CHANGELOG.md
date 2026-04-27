@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.0.10
+
+- Fix deleted files being misclassified as one-line replacements, which prevented opening the deleted-file baseline preview
+- Treat empty current file content as zero lines during diffing so whole-file deletions are detected as deletions
+- Keep deleted-file reviews on the read-only baseline preview path instead of attempting to open files that no longer exist
+- Split ReviewController UI-facing behavior into focused controller modules for review panels, decorations, deleted-file previews, and status bar updates
+- Move UI implementation helpers into `src/ui`, including review panel rendering, Explorer tree/CodeLens providers, and editor decoration definitions
+
 ## 0.0.9
 
 - Avoid treating old files from newly expanded scoped workspace roots as new pending files during auto capture

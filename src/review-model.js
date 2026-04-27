@@ -438,6 +438,10 @@ function buildReviewBlocks(originalText, modifiedText) {
 }
 
 function splitLines(text) {
+  if (!text) {
+    return []
+  }
+
   return text.replace(/\r\n/g, '\n').split('\n')
 }
 

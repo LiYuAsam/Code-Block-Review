@@ -4,11 +4,11 @@ const {
   createReviewItem,
   formatBlockLabel,
   getReviewItemKey
-} = require('./review-model')
+} = require('../review-model')
 const {
   createBlockTooltip,
   getBottomActionCodeLensRange
-} = require('./review-ui')
+} = require('./review-panel-ui')
 
 class ReviewTreeProvider {
   constructor(controller) {

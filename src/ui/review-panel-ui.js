@@ -1,6 +1,6 @@
 const vscode = require('vscode')
 
-const { formatBlockLabel } = require('./review-model')
+const { formatBlockLabel } = require('../review-model')
 const MAX_INLINE_PREVIEW_CHARS = 4000
 const MAX_DELETED_BASELINE_PREVIEW_CHARS = 180
 
