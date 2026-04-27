@@ -7,6 +7,7 @@ const { t } = require('../utils/i18n')
 const DELETED_FILE_PREVIEW_SCHEME = 'codex-review-deleted'
 
 const deletedPreviewControllerMethods = {
+  // Opens either the live source document or a virtual baseline-only document for deleted files.
   async openReviewSourceDocument(blockInfo) {
     if (await this.shouldUseDeletedFilePreview(blockInfo)) {
       return {
@@ -21,6 +22,7 @@ const deletedPreviewControllerMethods = {
     }
   },
 
+  // Deleted-file blocks need a virtual document because the original file path no longer exists.
   async shouldUseDeletedFilePreview(blockInfo) {
     return Boolean(
       blockInfo?.block?.changeKind === 'deletion' &&
@@ -29,6 +31,7 @@ const deletedPreviewControllerMethods = {
     )
   },
 
+  // Encodes the source file and block ID into a stable virtual-document URI.
   createDeletedFilePreviewUri(blockInfo) {
     const params = new URLSearchParams({
       uri: blockInfo.uri.toString(),
@@ -41,6 +44,7 @@ const deletedPreviewControllerMethods = {
     })
   },
 
+  // Supplies baseline text for the VS Code TextDocumentContentProvider.
   provideDeletedFilePreviewContent(uri) {
     const blockInfo = this.findDeletedFilePreviewBlock(uri)
     if (!blockInfo) {
@@ -50,6 +54,7 @@ const deletedPreviewControllerMethods = {
     return blockInfo.block.originalText || ''
   },
 
+  // Resolves a virtual preview URI back to the current session block.
   findDeletedFilePreviewBlock(uri) {
     if (!this.session) {
       return null
@@ -78,6 +83,7 @@ const deletedPreviewControllerMethods = {
     }
   },
 
+  // Maps review blocks onto either live-file ranges or baseline preview ranges.
   getSourceRangeForBlock(document, block, isDeletedFilePreview) {
     if (!isDeletedFilePreview) {
       return getRangeForBlock(document, block)
@@ -112,6 +118,7 @@ const deletedPreviewControllerMethods = {
     ))?.viewColumn
   },
 
+  // Closes stale deleted-file previews after the associated block has been handled.
   async closeDeletedFilePreviewEditors(uri) {
     if (!uri || uri.scheme !== DELETED_FILE_PREVIEW_SCHEME) {
       return

@@ -2,6 +2,7 @@ const vscode = require('vscode')
 const { t } = require('../utils/i18n')
 
 const statusControllerMethods = {
+  // Projects session and auto-capture state into the VS Code status bar.
   updateStatusBar() {
     if (this.state === 'capturing' && this.session) {
       if (this.sessionMode === 'auto' && this.autoCaptureReviewPending) {
@@ -48,6 +49,7 @@ const statusControllerMethods = {
     this.statusBarItem.show()
   },
 
+  // Chooses the compact status label for the armed auto-capture baseline state.
   getAutoCaptureStatusBarText() {
     if (this.autoCaptureBaselineRefreshPromise || this.autoCaptureBaselineStatus === 'syncing') {
       return t('status.baselineSyncing')
@@ -64,6 +66,7 @@ const statusControllerMethods = {
     return t('status.autoArmed')
   },
 
+  // Provides the longer status bar tooltip for baseline readiness and sync failures.
   getAutoCaptureBaselineStatusTooltip() {
     if (this.autoCaptureBaselineStatusMessage) {
       return this.autoCaptureBaselineStatusMessage
@@ -76,6 +79,7 @@ const statusControllerMethods = {
     return t('tooltip.baselineNotReady')
   },
 
+  // Publishes controller state into VS Code when-clauses for menus, views, and commands.
   async syncContexts() {
     await vscode.commands.executeCommand('setContext', 'codexReview.isCapturing', this.state === 'capturing')
     await vscode.commands.executeCommand('setContext', 'codexReview.isReviewing', this.state === 'reviewing')

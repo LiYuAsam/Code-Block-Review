@@ -24,6 +24,7 @@ class ReviewProfiler {
     this.outputShown = true
   }
 
+  // Emits a point-in-time memory snapshot plus caller-provided counters.
   logSnapshot(label, extra = {}) {
     if (!this.enabled) {
       return
@@ -45,6 +46,7 @@ class ReviewProfiler {
     )
   }
 
+  // Starts an elapsed-time/CPU measurement; returns null when profiler logging is disabled.
   startMark(label, extra = {}) {
     if (!this.enabled) {
       return null
@@ -58,6 +60,7 @@ class ReviewProfiler {
     }
   }
 
+  // Completes a mark created by startMark and appends timing data to the profiler output.
   finishMark(mark, extra = {}) {
     if (!mark) {
       return

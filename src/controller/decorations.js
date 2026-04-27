@@ -9,6 +9,7 @@ const { t } = require('../utils/i18n')
 const { DELETED_FILE_PREVIEW_SCHEME } = require('./deleted-preview')
 
 const decorationControllerMethods = {
+  // Clears all review decorations from currently visible editors.
   clearDecorations() {
     for (const editor of vscode.window.visibleTextEditors) {
       editor.setDecorations(this.pendingAddedDecoration, [])
@@ -20,6 +21,7 @@ const decorationControllerMethods = {
     }
   },
 
+  // Coalesces visible-editor decoration refreshes onto the next short timer tick.
   refreshAllVisibleEditors() {
     if (this.visibleEditorsRefreshTimer) {
       return
@@ -31,6 +33,7 @@ const decorationControllerMethods = {
     }, 16)
   },
 
+  // Applies the pending visible-editor refresh once session state is stable.
   flushVisibleEditorsRefresh() {
     if (this.state !== 'reviewing' || !this.session) {
       this.clearDecorations()
@@ -50,6 +53,7 @@ const decorationControllerMethods = {
     }
   },
 
+  // Recomputes all decoration buckets for a single live source editor.
   refreshEditor(editor) {
     if (editor.document.uri.scheme === DELETED_FILE_PREVIEW_SCHEME) {
       this.refreshDeletedFilePreviewEditor(editor)
@@ -111,6 +115,7 @@ const decorationControllerMethods = {
     editor.setDecorations(this.acceptedDecoration, acceptedOptions)
   },
 
+  // Marks every line in a virtual deleted-file preview as deleted baseline content.
   refreshDeletedFilePreviewEditor(editor) {
     editor.setDecorations(this.pendingAddedDecoration, [])
     editor.setDecorations(this.pendingDeletedBaselineDecoration, [])

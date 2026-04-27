@@ -10,6 +10,7 @@ const {
 const WORKSPACE_INCLUDE_GLOB = '**/*'
 const WORKSPACE_EXCLUDE_GLOB = '**/{.git,node_modules,dist,build,out,.next,.turbo,.cache,coverage}/**'
 
+// Hashes the current workspace-folder set into a filesystem-safe baseline bucket key.
 function getWorkspaceBaselineKey() {
   const folders = vscode.workspace.workspaceFolders ?? []
   if (folders.length === 0) {
@@ -38,6 +39,7 @@ function getActiveWorkspaceFolder() {
   return vscode.workspace.getWorkspaceFolder(editor.document.uri)
 }
 
+// Walks upward from a file until it finds a configured project marker inside the workspace.
 async function findNearestProjectRoot(uri, markers) {
   if (!uri || uri.scheme !== 'file') {
     return null
@@ -93,6 +95,7 @@ function isPathInsideOrEqual(candidatePath, rootPath) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
+// Detects .git paths so file watcher events can suppress capture around branch/ref changes.
 function isGitMetadataUri(uri) {
   if (!uri || uri.scheme !== 'file') {
     return false
@@ -102,6 +105,7 @@ function isGitMetadataUri(uri) {
   return normalizedPath.endsWith('/.git') || normalizedPath.includes('/.git/')
 }
 
+// Reads the HEAD/ref signature for the nearest Git repository containing a URI.
 async function readGitRepositoryStateForUri(uri) {
   if (!uri || uri.scheme !== 'file') {
     return null
@@ -153,6 +157,7 @@ async function getUriDirectoryPath(uri) {
   return path.dirname(uri.fsPath)
 }
 
+// Supports both normal .git directories and worktree/submodule gitdir files.
 async function readGitRepositoryStateFromMarker(repoRootPath, gitMarkerPath) {
   let gitDirectory = null
   try {
@@ -231,6 +236,7 @@ async function readTextFile(filePath) {
   }
 }
 
+// Full scans are reserved for lifecycle points where dirty-only scans may miss deletions or baseline-only files.
 function shouldRunFullWorkspaceScan(reason) {
   return !reason ||
     reason === 'manual-refresh' ||
@@ -239,6 +245,7 @@ function shouldRunFullWorkspaceScan(reason) {
     reason === 'delete-event'
 }
 
+// Builds the URI set to reconcile for either a full pass or a dirty-only incremental pass.
 function buildWorkspaceScanCandidates(options) {
   const {
     currentWorkspaceUris,

@@ -6,6 +6,7 @@ const MAX_INLINE_PREVIEW_CHARS = 4000
 const MAX_DELETED_BASELINE_PREVIEW_CHARS = 180
 const MAX_PANEL_DIFF_HIGHLIGHT_MATRIX_CELLS = 300000
 
+// Maps a review block to the visible source range used by decorations and reveal operations.
 function getRangeForBlock(document, block) {
   if (document.lineCount === 0) {
     return null
@@ -36,6 +37,7 @@ function createBlockTooltip(fileLabel, block) {
   return lines.join('\n')
 }
 
+// Builds one VS Code decoration option for pending or accepted source ranges.
 function createDecorationOption(range, fileLabel, block, state, options = {}) {
   const decorationOption = {
     range,
@@ -51,6 +53,7 @@ function createDecorationOption(range, fileLabel, block, state, options = {}) {
   return decorationOption
 }
 
+// Creates inline deleted-baseline text for deletion blocks that have no current range.
 function createDeletedBaselineDecorationOption(document, fileLabel, block) {
   if (block.changeKind !== 'deletion' || !Array.isArray(block.originalLines) || block.originalLines.length === 0) {
     return null
@@ -234,6 +237,7 @@ function escapeMarkdown(text) {
   return text.replace(/[\\`*_{}[\]()#+\-.!]/g, '\\$&')
 }
 
+// Places CodeLens actions at the bottom edge of the affected block.
 function getBottomActionCodeLensRange(document, block, options = {}) {
   if (document.lineCount === 0) {
     return null
@@ -251,6 +255,7 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max)
 }
 
+// Copies block data before handing it to the webview so later refreshes do not mutate fallback previews.
 function cloneBlockForPreview(blockInfo) {
   return {
     uri: blockInfo.uri,
@@ -293,6 +298,7 @@ function createPanelChangeSummaryHtml(block) {
   }).join('')
 }
 
+// Highlights inline word-level changes for modifications and plain-escapes additions/deletions.
 function createComparisonCodeHtml(block, baselineText, currentText) {
   if (block.changeKind !== 'modification') {
     return {
@@ -304,6 +310,7 @@ function createComparisonCodeHtml(block, baselineText, currentText) {
   return createInlineDiffCodeHtml(baselineText, currentText)
 }
 
+// Small LCS highlighter used only for panel snippets; large snippets fall back to escaped text.
 function createInlineDiffCodeHtml(originalText, modifiedText) {
   const originalTokens = tokenizeForPanelDiff(originalText)
   const modifiedTokens = tokenizeForPanelDiff(modifiedText)
@@ -387,6 +394,7 @@ function wrapDiffToken(token, tone) {
   return `<span class="diff-token ${tone}">${escapeHtml(token)}</span>`
 }
 
+// Renders the complete review webview for one block, including navigation and file-level actions.
 function createReviewPanelHtml(previewData, isLiveBlock, navigation, newPendingCount = 0) {
   const { label, block } = previewData
   const headlineHtml = createPanelChangeSummaryHtml(block)

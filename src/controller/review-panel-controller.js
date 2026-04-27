@@ -15,6 +15,7 @@ const {
 const { t } = require('../utils/i18n')
 
 const reviewPanelControllerMethods = {
+  // Creates or focuses the webview review panel and wires its command messages back to controller actions.
   async showReviewPanel(item) {
     const block = this.findBlockItem(item)
     if (!block) {
@@ -170,6 +171,7 @@ const reviewPanelControllerMethods = {
     await this.refreshReviewPanel()
   },
 
+  // Re-renders panel HTML from the current block, navigation state, and unseen pending count.
   async refreshReviewPanel() {
     if (!this.reviewPanelState) {
       return
@@ -228,6 +230,7 @@ const reviewPanelControllerMethods = {
     }
   },
 
+  // Tears down the webview panel without touching the active review session.
   disposeReviewPanel() {
     if (!this.reviewPanelState) {
       return
@@ -237,6 +240,7 @@ const reviewPanelControllerMethods = {
     this.reviewPanelState = null
   },
 
+  // Builds the canonical pending-block order shared by the tree, panel, and CodeLens navigation.
   getOrderedPendingBlockItems() {
     if (!this.session) {
       return []
@@ -264,6 +268,7 @@ const reviewPanelControllerMethods = {
     return this.cachedPendingItems
   },
 
+  // Calculates panel previous/next state for the currently displayed block.
   getPendingBlockNavigation(currentItem) {
     const items = this.getOrderedPendingBlockItems()
     const currentIndex = items.findIndex((item) => (
@@ -302,6 +307,7 @@ const reviewPanelControllerMethods = {
     return this.getAdjacentPendingBlockItem(currentItem, 1) ?? this.getAdjacentPendingBlockItem(currentItem, -1)
   },
 
+  // Finds the next file-level review target after accepting or rejecting a whole file.
   getNextPendingFileFirstItem(currentItem) {
     if (!currentItem?.uri || !this.session) {
       return this.getOrderedPendingBlockItems()[0] ?? null
@@ -362,6 +368,7 @@ const reviewPanelControllerMethods = {
     this.reviewPanelState.unseenPendingKeys.delete(key)
   },
 
+  // Tracks newly appeared pending blocks so the panel can surface them without stealing focus.
   updateReviewPanelPendingNoticeState(currentBlockInfo) {
     if (!this.reviewPanelState) {
       return 0
@@ -391,6 +398,7 @@ const reviewPanelControllerMethods = {
     return this.reviewPanelState.unseenPendingKeys.size
   },
 
+  // Opens the source beside the panel and scrolls the active review block into view.
   async revealReviewBlock(item, options = {}) {
     const block = this.findBlockItem(item)
     if (!block) {
@@ -422,6 +430,7 @@ const reviewPanelControllerMethods = {
     this.refreshAllVisibleEditors()
   },
 
+  // Best-effort wrapper used from panel actions so reveal failures do not break review flow.
   async safeRevealReviewBlock(item, options = {}) {
     try {
       await this.revealReviewBlock(item, options)

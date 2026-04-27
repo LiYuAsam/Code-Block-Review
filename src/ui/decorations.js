@@ -1,5 +1,6 @@
 const vscode = require('vscode')
 
+// Creates the shared decoration types disposed with the extension controller.
 function createReviewDecorations() {
   return {
     pendingAdded: vscode.window.createTextEditorDecorationType({

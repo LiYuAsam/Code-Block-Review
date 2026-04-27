@@ -49,6 +49,7 @@ const DEFAULT_PROJECT_ROOT_MARKERS = [
 let cachedIgnoredReviewGlobKey = null
 let cachedIgnoredReviewGlobPatterns = []
 
+// Central gate for deciding whether a VS Code document should participate in review.
 function isTrackableDocument(document) {
   return isTrackableUri(document?.uri)
 }
@@ -69,6 +70,7 @@ function filterTrackableUris(uris) {
   return uris.filter((uri) => isTrackableUri(uri))
 }
 
+// Applies default noisy-directory skips plus user-configured ignore globs.
 function shouldIgnoreReviewUri(uri) {
   if (!uri || (uri.scheme !== 'file' && uri.scheme !== 'untitled')) {
     return true
@@ -180,6 +182,7 @@ function compileGlobPattern(pattern) {
     })
 }
 
+// Reads and clamps auto-capture configuration into runtime-friendly milliseconds and thresholds.
 function getAutoCaptureSettings() {
   const config = vscode.workspace.getConfiguration('codexReview.autoCapture')
   const configuredTriggerEvents = config.get('triggerEvents', [
@@ -230,6 +233,7 @@ function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max)
 }
 
+// Converts raw VS Code edit ranges into the compact evidence used by auto capture.
 function summarizeAutoCaptureEvent(event) {
   let changedLines = 0
   let changedChars = 0
@@ -340,6 +344,7 @@ function sleep(ms) {
   })
 }
 
+// Summarizes a full-document delta using review blocks when event-level ranges are unavailable.
 function summarizeTextDelta(originalText, modifiedText) {
   const blocks = buildReviewBlocks(originalText, modifiedText)
   let changedLines = 0
@@ -377,6 +382,7 @@ async function safeOpenDocument(uriString) {
   }
 }
 
+// Prefers open editor text over disk so dirty documents are reviewed accurately.
 async function getCurrentTrackedText(uri, existsInWorkspace) {
   const openDocument = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString())
   if (openDocument && isTrackableDocument(openDocument)) {
@@ -394,6 +400,7 @@ async function getCurrentTrackedText(uri, existsInWorkspace) {
   return readTrackedTextFromUri(uri)
 }
 
+// Reads small text files only; large or binary files are ignored to keep review responsive.
 async function readTrackedTextFromUri(uri) {
   try {
     const stat = await vscode.workspace.fs.stat(uri)
@@ -430,6 +437,7 @@ function containsBinaryContent(bytes) {
   return false
 }
 
+// Produces review blocks with stable ranges and IDs from two text snapshots.
 function buildReviewBlocks(originalText, modifiedText) {
   const originalLines = splitLines(originalText)
   const modifiedLines = splitLines(modifiedText)
@@ -453,6 +461,7 @@ function splitTextForEdit(text) {
   return text.replace(/\r\n/g, '\n').split('\n')
 }
 
+// Trims common edges before choosing the exact or anchored diff strategy for the changed middle.
 function diffLines(originalLines, modifiedLines) {
   let prefixLength = 0
   const maxPrefix = Math.min(originalLines.length, modifiedLines.length)
@@ -492,6 +501,7 @@ function diffLines(originalLines, modifiedLines) {
   return [...prefixOps, ...middleOps, ...suffixOps]
 }
 
+// Exact LCS diff for reasonably small changed regions.
 function diffLinesDynamic(originalLines, modifiedLines) {
   const rows = originalLines.length
   const cols = modifiedLines.length
@@ -556,6 +566,7 @@ function diffLinesFallback(originalLines, modifiedLines) {
   return ops
 }
 
+// Scales large diffs by splitting around low-frequency matching lines before diffing subranges.
 function diffLinesAnchored(originalLines, modifiedLines, depth = 0) {
   if (originalLines.length === 0 || modifiedLines.length === 0) {
     return diffLinesFallback(originalLines, modifiedLines)
@@ -642,6 +653,7 @@ function diffLinesAnchored(originalLines, modifiedLines, depth = 0) {
   return ops
 }
 
+// Finds matching lines that are distinctive enough to be reliable anchors in both snapshots.
 function findStableLineAnchors(originalLines, modifiedLines) {
   const originalPositionsByLine = buildLinePositions(originalLines)
   const modifiedPositionsByLine = buildLinePositions(modifiedLines)
@@ -692,6 +704,7 @@ function buildLinePositions(lines) {
   return positionsByLine
 }
 
+// Keeps anchors in source order on both sides so recursive diff chunks never cross.
 function longestIncreasingAnchorSequence(candidates) {
   if (candidates.length === 0) {
     return []
@@ -741,6 +754,7 @@ function lowerBound(values, target) {
   return low
 }
 
+// Collapses adjacent insert/delete ops into the review blocks users accept or reject.
 function groupDiffOpsIntoBlocks(ops) {
   const blocks = []
   let originalLine = 0
@@ -818,6 +832,7 @@ function hashText(text) {
   return Math.abs(hash).toString(36)
 }
 
+// Replaces the modified range for one block with its original baseline text.
 function rejectBlockFromDocumentText(currentText, block) {
   const currentLines = splitTextForEdit(currentText)
   const replacementLines = splitTextForEdit(block.originalText)
@@ -927,6 +942,7 @@ function syncReviewItem(target, source) {
   target.modifiedHash = source.modifiedHash
 }
 
+// Recovers a block after refresh when the exact block ID changed but location/content still match.
 function findBestMatchingBlock(blocks, item) {
   let bestBlock = null
   let bestScore = -1

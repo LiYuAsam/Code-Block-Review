@@ -160,6 +160,7 @@ const messages = {
   }
 }
 
+// Looks up localized strings and interpolates simple {name} placeholders.
 function t(key, values = {}) {
   const template = messages[language][key] ?? messages.en[key] ?? key
   return template.replace(/\{(\w+)\}/g, (match, name) => {
@@ -171,6 +172,7 @@ function t(key, values = {}) {
   })
 }
 
+// Selects the singular/plural message key for count-based UI copy.
 function pluralKey(count, singularKey, pluralKeyName) {
   return count === 1 ? t(singularKey) : t(pluralKeyName)
 }

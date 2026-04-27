@@ -1,22 +1,15 @@
 const vscode = require('vscode')
-const path = require('path')
 const AUTO_CAPTURE_TRIGGER_WINDOW_FOCUS = 'windowFocus'
 const AUTO_CAPTURE_TRIGGER_ACTIVE_EDITOR_CHANGE = 'activeEditorChange'
 const GIT_ACTIVITY_SUPPRESSION_WINDOW_MS = 4000
 const WORKSPACE_RESCAN_DEBOUNCE_MS = 200
-const DOCUMENT_CHANGE_RESCAN_DEBOUNCE_MS = 1000
-const AUTO_CAPTURE_UNBASELINED_FILE_RECENCY_MS = 2 * 60 * 1000
 const LARGE_REVIEW_SESSION_PENDING_BLOCK_WARNING = 200
 const LARGE_REVIEW_SESSION_TEXT_WARNING_BYTES = 5 * 1024 * 1024
 const LARGE_REVIEW_SESSION_SNAPSHOT_WARNING_BYTES = 20 * 1024 * 1024
 const {
-  buildReviewBlocks,
   clearIgnoredReviewGlobsCache,
   countUniqueTouchedLinesAcrossFiles,
-  createReviewItem,
   filterTrackableUris,
-  findBestMatchingBlock,
-  fullDocumentRange,
   getAutoCaptureSettings,
   getCurrentTrackedText,
   hashText,
@@ -24,13 +17,8 @@ const {
   isTrackableUri,
   isUndoOrRedoChange,
   readTrackedTextFromUri,
-  rejectBlockFromDocumentText,
-  safeOpenDocument,
-  sleep,
   summarizeAutoCaptureEvent,
   summarizeTextDelta,
-  syncReviewItem,
-  toWorkspaceLabel,
   uriExists
 } = require('./review-model')
 const {
@@ -42,13 +30,16 @@ const {
   deletedPreviewControllerMethods
 } = require('./controller/deleted-preview')
 const { decorationControllerMethods } = require('./controller/decorations')
+const { reviewActionControllerMethods } = require('./controller/review-actions')
 const { reviewPanelControllerMethods } = require('./controller/review-panel-controller')
+const { sessionControllerMethods } = require('./controller/session')
 const { statusControllerMethods } = require('./controller/status')
+const { workspaceScanControllerMethods } = require('./controller/workspace-scan')
 const {
   cleanupSnapshotDirectory,
+  cleanupSnapshotFiles,
   cloneBaselineEntries,
   createAutoCaptureBaselineSnapshotDirectory,
-  createSessionBaselineSnapshotDirectory,
   persistBaselineText,
   readBaselineEntryText
 } = require('./utils/baseline-snapshots')
@@ -58,23 +49,26 @@ const { ReviewProfiler } = require('./utils/profiler')
 const {
   WORKSPACE_EXCLUDE_GLOB,
   WORKSPACE_INCLUDE_GLOB,
-  buildWorkspaceScanCandidates,
   findNearestProjectRoot,
   getActiveWorkspaceFolder,
   getWorkspaceBaselineKey,
   getWorkspaceKeyForUri,
   isGitMetadataUri,
   readGitRepositoryStateForRoot,
-  readGitRepositoryStateForUri,
-  shouldRunFullWorkspaceScan
+  readGitRepositoryStateForUri
 } = require('./utils/workspace')
+
+const activeControllers = new Set()
 
 function activate(context) {
   const controller = new ReviewController(context)
+  activeControllers.add(controller)
   context.subscriptions.push(controller)
 }
 
-function deactivate() {}
+function deactivate() {
+  return Promise.all([...activeControllers].map((controller) => controller.dispose()))
+}
 
 class ReviewController {
   constructor(context) {
@@ -121,6 +115,7 @@ class ReviewController {
     this.autoCaptureReviewPromptNonce = 0
     this.autoCaptureLargeSessionWarningShown = false
     this.autoCaptureSettings = getAutoCaptureSettings()
+    this.disposePromise = null
     this.deletedFilePreviewProvider = {
       provideTextDocumentContent: (uri) => this.provideDeletedFilePreviewContent(uri)
     }
@@ -212,15 +207,34 @@ class ReviewController {
   }
 
   dispose() {
+    if (this.disposePromise) {
+      return this.disposePromise
+    }
+
+    this.disposePromise = this.disposeAsync()
+    return this.disposePromise
+  }
+
+  async disposeAsync() {
     this.clearAutoCaptureTimers()
     this.clearWorkspaceRescanTimer()
     this.clearAutoCaptureFilesystemProbeTimer()
     this.clearVisibleEditorsRefreshTimer()
-    void this.cleanupAutoCaptureBaselineSnapshots()
-    void this.cleanupSessionBaselineSnapshots()
     this.disposeWorkspaceWatchers()
     this.disposeReviewPanel()
     this.clearDecorations()
+
+    try {
+      if (this.autoCaptureBaselineRefreshPromise) {
+        await this.autoCaptureBaselineRefreshPromise.catch(() => {})
+      }
+      await Promise.all([
+        this.cleanupAutoCaptureBaselineSnapshots(),
+        this.cleanupSessionBaselineSnapshots()
+      ])
+    } finally {
+      activeControllers.delete(this)
+    }
   }
 
   initializeWorkspaceWatchers() {
@@ -694,6 +708,7 @@ class ReviewController {
     return cloneBaselineEntries(this.autoCaptureBaselineEntriesByUri)
   }
 
+  // Rebuilds the idle auto-capture baseline used to detect future generated edit bursts.
   async refreshAutoCaptureBaseline() {
     if (this.autoCaptureBaselineRefreshPromise) {
       return this.autoCaptureBaselineRefreshPromise
@@ -771,7 +786,12 @@ class ReviewController {
           }
         }
 
+        const staleSnapshotPaths = collectStaleSnapshotPaths(
+          this.autoCaptureBaselineEntriesByUri,
+          nextEntriesByUri
+        )
         this.autoCaptureBaselineEntriesByUri = nextEntriesByUri
+        await cleanupSnapshotFiles(staleSnapshotPaths)
         this.lastAutoCaptureBaselineRefreshAt = Date.now()
         this.autoCaptureBaselineStatus = 'ready'
         this.autoCaptureBaselineStatusMessage =
@@ -816,6 +836,7 @@ class ReviewController {
     }
   }
 
+  // Clears the armed auto-capture state and releases its baseline snapshots.
   resetAutoCaptureArmedState() {
     this.clearAutoReviewOfferTimer()
     this.clearAutoObservationTimer()
@@ -838,6 +859,7 @@ class ReviewController {
     this.treeProvider.refresh()
   }
 
+  // Arms auto capture and refreshes its baseline when settings or workspace context require it.
   async ensureAutoCaptureReady(options = {}) {
     const {
       refreshBaseline = false,
@@ -874,6 +896,7 @@ class ReviewController {
     }
   }
 
+  // Responds to focus/editor triggers that are allowed to prepare auto capture.
   async armAutoCapture(trigger, options = {}) {
     if (!this.autoCaptureSettings.enabled) {
       return
@@ -1187,6 +1210,7 @@ class ReviewController {
     return false
   }
 
+  // Records edit burst evidence that may later cross the auto-capture threshold.
   async recordAutoCaptureEvidence(event) {
     const uriString = event.document.uri.toString()
     this.autoCaptureEvidence.push({
@@ -1232,6 +1256,7 @@ class ReviewController {
     }
   }
 
+  // Decides whether accumulated edit evidence is strong enough to start an auto session.
   shouldStartAutoCaptureFromEvidence() {
     const summary = this.getAutoCaptureEvidenceSummary()
     const thresholds = this.autoCaptureSettings.thresholds
@@ -1533,6 +1558,7 @@ class ReviewController {
     await this.syncContexts()
   }
 
+  // Promotes the armed baseline and collected evidence into a real auto capture session.
   async startAutoCaptureFromEvidence() {
     if (this.state !== 'idle' || this.autoCaptureState !== 'armed') {
       return false
@@ -1617,6 +1643,7 @@ class ReviewController {
     }
   }
 
+  // Fast path from a document change event into auto capture when no session is active.
   async maybeStartAutoCaptureFromDocumentChange(event) {
     if (!this.autoCaptureSettings.enabled) {
       return false
@@ -1701,1184 +1728,16 @@ class ReviewController {
     return document.getText() === candidateBaselineText
   }
 
-  async startSession(options = {}) {
-    const profile = this.profiler.startMark('startSession', { mode: options.mode ?? 'manual' })
-    const {
-      mode = 'manual',
-      silent = false,
-      baselineEntries = null,
-      baselineOverrides = null,
-      adoptedBaselineSnapshotDirectory = null,
-      initialTouchedUris = []
-    } = options
-
-    if (this.state !== 'idle') {
-      if (!silent) {
-        void vscode.window.showInformationMessage(t('message.sessionAlreadyActive'))
-      }
-      return false
-    }
-
-    try {
-      this.clearAutoStopTimer()
-      this.clearAutoReviewOfferTimer()
-      if (
-        adoptedBaselineSnapshotDirectory &&
-        adoptedBaselineSnapshotDirectory === this.autoCaptureBaselineSnapshotDirectory
-      ) {
-        this.autoCaptureBaselineSnapshotDirectory = null
-      }
-      this.resetAutoCaptureArmedState()
-      this.dirtyWorkspaceUris.clear()
-      const baselineSnapshotDirectory = adoptedBaselineSnapshotDirectory ?? await createSessionBaselineSnapshotDirectory()
-      this.sessionMode = mode
-      const startedAtMs = Date.now()
-      this.session = {
-        startedAt: new Date(startedAtMs).toISOString(),
-        startedAtMs,
-        baselineEntriesByUri: new Map(),
-        baselineSnapshotDirectory,
-        touchedUris: new Set(),
-        reviewFiles: new Map(),
-        gitStatesByRoot: new Map(),
-        finalWorkspaceDiffClean: false
-      }
-      this.markReviewDataChanged()
-
-      if (mode === 'auto' && Array.isArray(initialTouchedUris)) {
-        for (const uriString of initialTouchedUris) {
-          if (uriString) {
-            this.session.touchedUris.add(uriString)
-          }
-        }
-      }
-
-      if (baselineEntries instanceof Map) {
-        for (const [key, entry] of baselineEntries.entries()) {
-          if (entry?.kind === 'snapshot' && entry.snapshotPath) {
-            this.session.baselineEntriesByUri.set(key, { ...entry })
-          } else if (entry?.kind === 'empty' || entry?.kind === 'missing') {
-            this.session.baselineEntriesByUri.set(key, { kind: entry.kind })
-          }
-        }
-      }
-
-      if (baselineOverrides instanceof Map) {
-        for (const [key, baseline] of baselineOverrides.entries()) {
-          if (baseline?.kind === 'missing') {
-            this.setSessionBaselineMissing(key)
-          } else {
-            await this.setSessionBaselineText(key, baseline)
-          }
-        }
-      }
-
-      for (const document of vscode.workspace.textDocuments) {
-        if (!isTrackableDocument(document)) {
-          continue
-        }
-
-        const key = document.uri.toString()
-        if (mode === 'manual') {
-          await this.setSessionBaselineText(key, document.getText())
-        } else if (!this.hasSessionBaseline(key)) {
-          this.setSessionBaselineMissing(key)
-        }
-      }
-
-      await this.captureWorkspaceBaseline()
-      this.session.gitStatesByRoot = await this.captureSessionGitStates()
-
-      this.state = 'capturing'
-      this.autoCaptureReviewPending = false
-      this.autoCaptureLargeSessionWarningShown = false
-      await this.syncContexts()
-      this.treeProvider.refresh()
-      this.blockActionProvider.refresh()
-      this.updateStatusBar()
-      this.refreshAllVisibleEditors()
-      if (!silent) {
-        void vscode.window.showInformationMessage(t('message.captureStarted'))
-      }
-
-      return true
-    } finally {
-      this.profiler.finishMark(profile, {
-        baselineEntries: this.session?.baselineEntriesByUri.size ?? 0,
-        touchedUris: this.session?.touchedUris.size ?? 0
-      })
-    }
-  }
-
-  async stopSession(options = {}) {
-    const profile = this.profiler.startMark('stopSession', { requestedMode: options.requestedMode ?? '' })
-    const {
-      silent = false,
-      requestedMode = null
-    } = options
-
-    if (this.state !== 'capturing') {
-      if (!silent) {
-        void vscode.window.showInformationMessage(t('message.noCaptureSession'))
-      }
-      return false
-    }
-
-    if (requestedMode && this.sessionMode !== requestedMode) {
-      return false
-    }
-
-    try {
-      this.clearAutoStopTimer()
-      this.clearAutoReviewOfferTimer()
-      const canReuseAutoFinalPass = this.sessionMode === 'auto' &&
-        this.autoCaptureReviewPending &&
-        this.session?.finalWorkspaceDiffClean
-      this.autoCaptureReviewPending = false
-      this.state = 'reviewing'
-      if (!canReuseAutoFinalPass) {
-        await this.runFinalWorkspaceDiffPass()
-      } else {
-        this.profiler.logSnapshot('runFinalWorkspaceDiffPass:reused', {
-          reason: 'auto-ready-clean'
-        })
-      }
-      await this.syncContexts()
-      this.treeProvider.refresh()
-      this.blockActionProvider.refresh()
-      this.updateStatusBar()
-      this.refreshAllVisibleEditors()
-
-      const pending = this.getPendingBlockCount()
-      if (pending === 0) {
-        await this.completeReview(t('message.noBlocksSessionClosed'), { silent })
-        return true
-      }
-
-      if (!silent) {
-        void vscode.window.showInformationMessage(t('message.enteredReview', {
-          count: pending,
-          blockWord: pluralKey(pending, 'unit.block.singular', 'unit.block.plural')
-        }))
-      }
-
-      return true
-    } finally {
-      this.profiler.finishMark(profile, {
-        pendingBlocks: this.getPendingBlockCount(),
-        reviewFiles: this.session?.reviewFiles.size ?? 0
-      })
-    }
-  }
-
-  async enterReadyReview() {
-    if (this.sessionMode === 'auto' && this.state === 'capturing' && this.autoCaptureReviewPending) {
-      const entered = await this.stopSession({
-        silent: true,
-        requestedMode: 'auto'
-      })
-      if (entered) {
-        await this.openReviewPanel()
-      }
-      return entered
-    }
-
-    if (this.state === 'reviewing') {
-      await this.openReviewPanel()
-      return true
-    }
-
-    return false
-  }
-
-  async enterReadyReviewAndOpenFirstPendingBlock() {
-    const entered = await this.enterReadyReviewWithoutPanel()
-    if (!entered) {
-      return false
-    }
-
-    return this.openFirstPendingBlock()
-  }
-
-  async enterReadyReviewWithoutPanel() {
-    if (this.sessionMode === 'auto' && this.state === 'capturing' && this.autoCaptureReviewPending) {
-      return this.stopSession({
-        silent: true,
-        requestedMode: 'auto'
-      })
-    }
-
-    return this.state === 'reviewing'
-  }
-
-  async handleAutoCaptureIdleReached() {
-    if (this.sessionMode !== 'auto' || this.state !== 'capturing') {
-      return
-    }
-
-    this.clearAutoStopTimer()
-    await this.runFinalWorkspaceDiffPass()
-
-    const pending = this.getPendingBlockCount()
-    if (pending === 0) {
-      await this.completeReview(null, { silent: true })
-      return
-    }
-
-    this.autoCaptureReviewPending = true
-    this.autoCaptureReviewPromptNonce += 1
-    this.treeProvider.refresh()
-    this.blockActionProvider.refresh()
-    this.updateStatusBar()
-    await this.syncContexts()
-    await this.maybeWarnLargeAutoReviewSession()
-    this.promptAutoReviewOffer()
-    this.scheduleAutoReviewOfferTimer()
-  }
-
-  async runFinalWorkspaceDiffPass() {
-    const profile = this.profiler.startMark('runFinalWorkspaceDiffPass')
-    try {
-      await this.scanWorkspaceForChanges('final-pass-1')
-
-      // Give late-arriving file writes and watcher events a brief chance to settle.
-      // Only run a second pass if something actually became dirty during that window.
-      await sleep(300)
-      const pendingDirtyCount = this.dirtyWorkspaceUris.size
-      if (pendingDirtyCount > 0) {
-        await this.scanWorkspaceForChanges('final-pass-2-dirty')
-      }
-      if (this.session) {
-        this.session.finalWorkspaceDiffClean = this.dirtyWorkspaceUris.size === 0
-      }
-      this.profiler.finishMark(profile, {
-        touchedUris: this.session?.touchedUris.size ?? 0,
-        reviewFiles: this.session?.reviewFiles.size ?? 0,
-        secondPass: pendingDirtyCount > 0 ? 'dirty-only' : 'skipped',
-        dirtyAfterWait: pendingDirtyCount
-      })
-    } catch (error) {
-      this.profiler.finishMark(profile, {
-        touchedUris: this.session?.touchedUris.size ?? 0,
-        reviewFiles: this.session?.reviewFiles.size ?? 0,
-        failed: 'true'
-      })
-      throw error
-    }
-  }
-
-  async completeReview(message, options = {}) {
-    const profile = this.profiler.startMark('completeReview', { silent: options.silent ? 'true' : 'false' })
-    const { silent = false } = options
-
-    if (this.state === 'idle') {
-      return
-    }
-
-    try {
-      this.clearAutoStopTimer()
-      this.clearAutoReviewOfferTimer()
-      this.state = 'idle'
-      const completedSession = this.session
-      this.session = null
-      this.sessionMode = null
-      this.markReviewDataChanged()
-      this.resetAutoCaptureArmedState()
-      this.disposeReviewPanel()
-      await this.cleanupSessionBaselineSnapshots(completedSession)
-      await this.syncContexts()
-      this.treeProvider.refresh()
-      this.blockActionProvider.refresh()
-      this.updateStatusBar()
-      this.refreshAllVisibleEditors()
-
-      await this.ensureAutoCaptureReady({ refreshBaseline: true, silent: true })
-      this.updateStatusBar()
-      await this.syncContexts()
-
-      if (message && !silent) {
-        void vscode.window.showInformationMessage(message)
-      }
-    } finally {
-      this.profiler.finishMark(profile, { state: this.state })
-    }
-  }
-
-  async refreshReview() {
-    if (!this.session) {
-      return
-    }
-
-    const profile = this.profiler.startMark('refreshReview')
-    try {
-      await this.scanWorkspaceForChanges('manual-refresh')
-      if (await this.completeAutoReadySessionIfEmpty()) {
-        return
-      }
-
-      this.treeProvider.refresh()
-      this.blockActionProvider.refresh()
-      this.updateStatusBar()
-      this.refreshAllVisibleEditors()
-      await this.maybeAutoComplete()
-    } finally {
-      this.profiler.finishMark(profile, {
-        pendingBlocks: this.getPendingBlockCount(),
-        reviewFiles: this.session?.reviewFiles.size ?? 0
-      })
-    }
-  }
-
-  async handleDocumentChange(event) {
-    if (!isTrackableDocument(event.document)) {
-      return
-    }
-
-    if (!this.session) {
-      const started = await this.maybeStartAutoCaptureFromDocumentChange(event)
-      if (!started || !this.session) {
-        return
-      }
-    }
-
-    if (!this.session) {
-      return
-    }
-
-    const uriString = event.document.uri.toString()
-    await this.ensureBaseline(event.document)
-    this.session.touchedUris.add(uriString)
-    this.markWorkspaceUriDirty(uriString)
-
-    if (this.state === 'reviewing') {
-      this.scheduleWorkspaceRescan('document-change', DOCUMENT_CHANGE_RESCAN_DEBOUNCE_MS)
-      this.updateStatusBar()
-      return
-    }
-
-    if (this.sessionMode === 'auto') {
-      this.noteAutoCaptureActivity()
-    }
-
-    this.updateStatusBar()
-  }
-  async handleWorkspaceFilesDeleted(event) {
-    if (!this.session) {
-      return
-    }
-
-    const deletedTrackableUris = filterTrackableUris(event.files)
-    if (deletedTrackableUris.length === 0) {
-      return
-    }
-
-    this.invalidateWorkspaceFileListCache()
-    for (const uri of deletedTrackableUris) {
-      this.markWorkspaceUriDirty(uri)
-    }
-    this.noteAutoCaptureActivity()
-    await this.scanWorkspaceForChanges('delete-event')
-    this.treeProvider.refresh()
-    this.blockActionProvider.refresh()
-    this.updateStatusBar()
-    this.refreshAllVisibleEditors()
-
-    if (this.state === 'reviewing') {
-      await this.refreshReviewPanel()
-      await this.maybeAutoComplete()
-    }
-  }
-
-  async ensureBaseline(document) {
-    if (!this.session) {
-      return
-    }
-
-    const key = document.uri.toString()
-    if (this.hasSessionBaseline(key)) {
-      return
-    }
-
-    // If a trackable document was not present in the session baseline snapshot,
-    // treat it as created during the session so additions diff against empty content.
-    this.setSessionBaselineMissing(key)
-  }
-
-  async rebuildAllTouchedFiles() {
-    if (!this.session) {
-      return
-    }
-
-    for (const uriString of this.session.touchedUris) {
-      await this.rebuildFile(uriString)
-    }
-  }
-
-  async rebuildFile(uriString, providedDocument) {
-    if (!this.session) {
-      return
-    }
-
-    const previousFile = this.session.reviewFiles.get(uriString)
-    const previousStatusById = new Map()
-
-    if (previousFile) {
-      for (const block of previousFile.blocks) {
-        previousStatusById.set(block.id, block.status)
-      }
-    }
-
-    const baselineText = await this.getSessionBaselineText(uriString)
-    const document = providedDocument ?? (await safeOpenDocument(uriString))
-    const currentText = document ? document.getText() : ''
-    const targetUri = document ? document.uri : vscode.Uri.parse(uriString)
-    this.updateReviewFile(uriString, targetUri, baselineText, currentText, previousStatusById)
-  }
-
-  updateReviewFile(uriString, uri, baselineText, currentText, previousStatusById = new Map()) {
-    if (!this.session) {
-      return
-    }
-
-    const blocks = buildReviewBlocks(baselineText, currentText).map((block) => ({
-      ...block,
-      status: previousStatusById.get(block.id) ?? 'pending'
-    }))
-
-    if (blocks.length === 0) {
-      this.session.reviewFiles.delete(uriString)
-      this.markReviewDataChanged()
-      return
-    }
-
-    this.session.reviewFiles.set(uriString, {
-      uri,
-      label: toWorkspaceLabel(uri),
-      blocks
-    })
-    this.markReviewDataChanged()
-  }
-
-  async captureWorkspaceBaseline() {
-    if (!this.session) {
-      return
-    }
-
-    const profile = this.profiler.startMark('captureWorkspaceBaseline')
-    const workspaceFiles = await this.listTrackableWorkspaceFiles()
-
-    try {
-      await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: 'Code Block Review: Capturing workspace baseline',
-        cancellable: false
-      }, async (progress) => {
-        const total = workspaceFiles.length || 1
-        let processed = 0
-
-        for (const uri of workspaceFiles) {
-          const key = uri.toString()
-          if (!this.session || this.hasSessionBaseline(key)) {
-            processed += 1
-            continue
-          }
-
-          if (this.sessionMode === 'auto') {
-            // Scoped auto baselines may not include every file in large workspaces.
-            // Only treat missing-baseline files as new when they were touched by
-            // this capture or look freshly changed; otherwise leave them out so
-            // old files from newly discovered roots do not become pending review.
-            if (await this.shouldTreatAutoMissingBaselineAsNewFile(uri)) {
-              this.setSessionBaselineMissing(key)
-            }
-          } else {
-            const text = await readTrackedTextFromUri(uri)
-            if (text !== null) {
-              await this.setSessionBaselineText(key, text)
-            }
-          }
-
-          processed += 1
-          if (processed % 50 === 0 || processed === total) {
-            progress.report({ increment: (processed / total) * 100 })
-          }
-        }
-      })
-    } finally {
-      this.profiler.finishMark(profile, {
-        workspaceFiles: workspaceFiles.length,
-        baselineEntries: this.session?.baselineEntriesByUri.size ?? 0
-      })
-    }
-
-  }
-
-  async shouldTreatAutoMissingBaselineAsNewFile(uri) {
-    if (!this.session || this.sessionMode !== 'auto' || !uri) {
-      return false
-    }
-
-    const uriString = uri.toString()
-    if (
-      this.session.touchedUris.has(uriString) ||
-      this.session.reviewFiles.has(uriString) ||
-      this.dirtyWorkspaceUris.has(uriString)
-    ) {
-      return true
-    }
-
-    if (vscode.workspace.textDocuments.some((document) => (
-      document.uri.toString() === uriString &&
-      isTrackableDocument(document) &&
-      document.isDirty
-    ))) {
-      return true
-    }
-
-    if (uri.scheme !== 'file') {
-      return false
-    }
-
-    const startedAtMs = this.session.startedAtMs ?? Date.parse(this.session.startedAt) ?? Date.now()
-    const recentCutoff = startedAtMs - AUTO_CAPTURE_UNBASELINED_FILE_RECENCY_MS
-    try {
-      const stat = await vscode.workspace.fs.stat(uri)
-      return stat.mtime >= recentCutoff
-    } catch {
-      return false
-    }
-  }
-
-  async scanWorkspaceForChanges(reason = 'scan') {
-    if (!this.session) {
-      return
-    }
-
-    const requestedFullScan = shouldRunFullWorkspaceScan(reason)
-    if (this.workspaceScanPromise) {
-      const activeReason = this.workspaceScanReason
-      const activeFullScan = shouldRunFullWorkspaceScan(activeReason)
-      if (activeFullScan && requestedFullScan) {
-        this.profiler.logSnapshot('scanWorkspaceForChanges:coalesced', {
-          reason,
-          activeReason
-        })
-        await this.workspaceScanPromise
-        return
-      }
-
-      await this.workspaceScanPromise
-      if (!this.session) {
-        return
-      }
-    }
-
-    const scanPromise = this.performWorkspaceScanForChanges(reason)
-    this.workspaceScanPromise = scanPromise
-    this.workspaceScanReason = reason
-    try {
-      await scanPromise
-    } finally {
-      if (this.workspaceScanPromise === scanPromise) {
-        this.workspaceScanPromise = null
-        this.workspaceScanReason = null
-      }
-    }
-  }
-
-  async performWorkspaceScanForChanges(reason = 'scan') {
-    if (!this.session) {
-      return
-    }
-
-    const profile = this.profiler.startMark('scanWorkspaceForChanges', { reason })
-    if (await this.handleSessionGitStateChange(reason)) {
-      this.profiler.finishMark(profile, {
-        gitStateChanged: 'true'
-      })
-      return
-    }
-
-    const scanSession = this.session
-    const dirtyUrisAtScanStart = new Set(this.dirtyWorkspaceUris)
-    const workspaceFiles = await this.listTrackableWorkspaceFiles()
-    const currentWorkspaceUris = new Map(workspaceFiles.map((uri) => [uri.toString(), uri]))
-    const shouldRunFullScan = shouldRunFullWorkspaceScan(reason)
-    const candidateUris = buildWorkspaceScanCandidates({
-      currentWorkspaceUris,
-      shouldRunFullScan,
-      baselineUriStrings: this.session?.baselineEntriesByUri.keys() ?? [],
-      dirtyWorkspaceUris: this.dirtyWorkspaceUris
-    })
-
-    try {
-      if (this.session !== scanSession) {
-        return
-      }
-
-      scanSession.touchedUris.clear()
-
-      for (const [uriString, uri] of candidateUris) {
-        if (this.session !== scanSession) {
-          return
-        }
-
-        const previousFile = scanSession.reviewFiles.get(uriString)
-        const previousStatusById = new Map()
-
-        if (previousFile) {
-          for (const block of previousFile.blocks) {
-            previousStatusById.set(block.id, block.status)
-          }
-        }
-
-        const existsInWorkspace = uri.scheme !== 'file' || currentWorkspaceUris.has(uriString)
-        const currentText = await getCurrentTrackedText(uri, existsInWorkspace)
-        const hadBaseline = this.hasSessionBaseline(uriString)
-
-        if (this.session !== scanSession) {
-          return
-        }
-
-        if (!hadBaseline && currentText === null) {
-          if (scanSession.reviewFiles.delete(uriString)) {
-            this.markReviewDataChanged()
-          }
-          continue
-        }
-
-        if (!hadBaseline) {
-          if (
-            this.sessionMode === 'auto' &&
-            !(await this.shouldTreatAutoMissingBaselineAsNewFile(uri))
-          ) {
-            if (scanSession.reviewFiles.delete(uriString)) {
-              this.markReviewDataChanged()
-            }
-            continue
-          }
-
-          this.setSessionBaselineMissing(uriString)
-        }
-
-        const baselineText = await this.getSessionBaselineText(uriString)
-        const comparableCurrentText = currentText ?? ''
-
-        if (baselineText === comparableCurrentText) {
-          if (scanSession.reviewFiles.delete(uriString)) {
-            this.markReviewDataChanged()
-          }
-          continue
-        }
-
-        scanSession.touchedUris.add(uriString)
-        this.updateReviewFile(uriString, uri, baselineText, comparableCurrentText, previousStatusById)
-      }
-    } finally {
-      if (shouldRunFullScan) {
-        for (const uriString of dirtyUrisAtScanStart) {
-          this.dirtyWorkspaceUris.delete(uriString)
-        }
-      } else {
-        for (const uriString of candidateUris.keys()) {
-          this.dirtyWorkspaceUris.delete(uriString)
-        }
-      }
-
-      this.profiler.finishMark(profile, {
-        fullScan: shouldRunFullScan ? 'true' : 'false',
-        candidateUris: candidateUris.size,
-        touchedUris: this.session?.touchedUris.size ?? 0,
-        reviewFiles: this.session?.reviewFiles.size ?? 0,
-        dirtyUrisRemaining: this.dirtyWorkspaceUris.size
-      })
-    }
-
-  }
-
-  getFiles() {
-    if (!this.session) {
-      return []
-    }
-
-    if (this.cachedFilesVersion !== this.reviewDataVersion) {
-      this.cachedFiles = [...this.session.reviewFiles.values()].sort((left, right) => left.label.localeCompare(right.label))
-      this.cachedFilesVersion = this.reviewDataVersion
-    }
-
-    return this.cachedFiles
-  }
-
-  getPendingBlockCount() {
-    if (!this.session) {
-      return 0
-    }
-
-    if (this.cachedPendingCountVersion !== this.reviewDataVersion) {
-      let count = 0
-      for (const file of this.session.reviewFiles.values()) {
-        for (const block of file.blocks) {
-          if (block.status === 'pending') {
-            count += 1
-          }
-        }
-      }
-      this.cachedPendingCount = count
-      this.cachedPendingCountVersion = this.reviewDataVersion
-    }
-
-    return this.cachedPendingCount
-  }
-
-  async openBlock(item, options = {}) {
-    const block = this.findBlockItem(item)
-    if (!block) {
-      return
-    }
-
-    const source = await this.openReviewSourceDocument(block)
-    const document = source.document
-    const editor = await vscode.window.showTextDocument(document, {
-      viewColumn: options.viewColumn,
-      preview: false,
-      preserveFocus: options.preserveFocus
-    })
-    const range = this.getSourceRangeForBlock(document, block.block, source.isDeletedFilePreview)
-    if (range) {
-      editor.selection = new vscode.Selection(range.start, range.start)
-      editor.revealRange(range, vscode.TextEditorRevealType.InCenter)
-    }
-  }
-
-  async openFirstPendingBlock() {
-    if (this.state !== 'reviewing' || !this.session) {
-      return false
-    }
-
-    const firstPendingItem = this.getOrderedPendingBlockItems()[0] ?? null
-    if (!firstPendingItem) {
-      void vscode.window.showInformationMessage(t('message.noPendingBlocks'))
-      return false
-    }
-
-    await this.openBlock(firstPendingItem)
-    return true
-  }
-
-  async openAdjacentPendingBlock(item, direction) {
-    if (this.state !== 'reviewing' || !this.session) {
-      return false
-    }
-
-    const targetItem = this.getAdjacentPendingBlockItem(item, direction)
-    if (!targetItem) {
-      return false
-    }
-
-    await this.openBlock(targetItem)
-    return true
-  }
-
-  async openReviewPanel(item) {
-    if (this.state !== 'reviewing' || !this.session) {
-      return
-    }
-
-    let targetItem = null
-
-    if (item?.kind === 'block') {
-      const block = this.findBlockItem(item)
-      if (block) {
-        targetItem = createReviewItem(block.uri, block.block)
-      }
-    } else if (item?.kind === 'file') {
-      const file = this.findFileItem(item)
-      const block = file?.blocks.find((candidate) => candidate.status === 'pending') ?? file?.blocks[0]
-      if (file && block) {
-        targetItem = createReviewItem(file.uri, block)
-      }
-    } else if (this.reviewPanelState?.currentItem) {
-      const block = this.findBlockItem(this.reviewPanelState.currentItem)
-      if (block) {
-        targetItem = createReviewItem(block.uri, block.block)
-      }
-    }
-
-    if (!targetItem) {
-      targetItem = this.getOrderedPendingBlockItems()[0] ?? null
-    }
-
-    if (!targetItem) {
-      void vscode.window.showInformationMessage(t('message.noPendingBlocks'))
-      return
-    }
-
-    await this.showReviewPanel(targetItem)
-  }
-
-  async saveReviewDocument(uri) {
-    if (!uri || uri.scheme !== 'file') {
-      return true
-    }
-
-    if (!(await uriExists(uri))) {
-      return true
-    }
-
-    try {
-      const document = await vscode.workspace.openTextDocument(uri)
-      if (!document.isDirty) {
-        return true
-      }
-
-      const saved = await document.save()
-      if (!saved) {
-        void vscode.window.showWarningMessage(t('message.failedToSave', { file: toWorkspaceLabel(uri) }))
-      }
-      return saved
-    } catch {
-      void vscode.window.showWarningMessage(t('message.failedToSave', { file: toWorkspaceLabel(uri) }))
-      return false
-    }
-  }
-
-  async applyTextToUri(uri, text) {
-    if (!uri) {
-      return false
-    }
-
-    const document = await safeOpenDocument(uri.toString())
-    if (document) {
-      const edit = new vscode.WorkspaceEdit()
-      edit.replace(document.uri, fullDocumentRange(document), text)
-      const applied = await vscode.workspace.applyEdit(edit)
-      if (!applied) {
-        return false
-      }
-
-      await this.saveReviewDocument(document.uri)
-      return true
-    }
-
-    if (uri.scheme !== 'file') {
-      return false
-    }
-
-    try {
-      await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(uri.fsPath)))
-      await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'))
-      this.invalidateWorkspaceFileListCache()
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  async deleteFileUri(uri) {
-    if (!uri || uri.scheme !== 'file') {
-      return false
-    }
-
-    try {
-      const edit = new vscode.WorkspaceEdit()
-      edit.deleteFile(uri, { ignoreIfNotExists: true })
-      const applied = await vscode.workspace.applyEdit(edit)
-      if (applied) {
-        this.invalidateWorkspaceFileListCache()
-      }
-      return applied
-    } catch {
-      return false
-    }
-  }
-
-  async rejectUriToBaseline(uri, baselineText) {
-    if (this.hasSessionMissingBaseline(uri.toString())) {
-      return this.deleteFileUri(uri)
-    }
-
-    return this.applyTextToUri(uri, baselineText)
-  }
-
-  async finishRejectedMissingFile(uri) {
-    if (!this.session || !uri) {
-      return
-    }
-
-    const uriString = uri.toString()
-    this.session.reviewFiles.delete(uriString)
-    this.session.touchedUris.delete(uriString)
-    this.dirtyWorkspaceUris.delete(uriString)
-    this.markReviewDataChanged()
-    this.treeProvider.refresh()
-    this.blockActionProvider.refresh()
-    this.updateStatusBar()
-    this.refreshDecorationsForUri(uriString)
-    await this.maybeAutoComplete()
-  }
-
-  async acceptBlock(item) {
-    const block = this.findBlockItem(item)
-    if (!block || block.block.status !== 'pending') {
-      return
-    }
-
-    block.block.status = 'accepted'
-    this.markReviewDataChanged()
-    this.treeProvider.refresh()
-    this.blockActionProvider.refresh()
-    this.updateStatusBar()
-    this.refreshDecorationsForUri(block.uri.toString())
-    await this.saveReviewDocument(block.uri)
-    await this.refreshReviewPanel()
-    await this.maybeAutoComplete()
-  }
-
-  async acceptBlockAndAdvance(item) {
-    const deletedPreviewUri = await this.getDeletedFilePreviewUriForItem(item)
-    const sourceViewColumn = this.getVisibleEditorViewColumn(deletedPreviewUri)
-    const nextItem = this.getPreferredNextReviewItem(item)
-    await this.acceptBlock(item)
-    await this.closeDeletedFilePreviewEditors(deletedPreviewUri)
-
-    if (nextItem && this.state === 'reviewing') {
-      await this.openBlock(nextItem, { viewColumn: sourceViewColumn })
-    }
-  }
-
-  async previewBlock(item) {
-    await this.openReviewPanel(item)
-  }
-
-  async rejectBlock(item) {
-    const block = this.findBlockItem(item)
-    if (!block) {
-      void vscode.window.showWarningMessage(t('message.couldNotFindBlock'))
-      return
-    }
-
-    const document = await safeOpenDocument(block.uri.toString())
-    const currentText = document ? document.getText() : ''
-    const nextText = rejectBlockFromDocumentText(currentText, block.block)
-    const shouldDeleteFile = nextText === '' && this.hasSessionMissingBaseline(block.uri.toString())
-    const applied = nextText === ''
-      ? await this.rejectUriToBaseline(block.uri, nextText)
-      : await this.applyTextToUri(block.uri, nextText)
-
-    if (!applied) {
-      void vscode.window.showWarningMessage(t('message.failedToRejectBlock'))
-      return
-    }
-
-    if (shouldDeleteFile) {
-      await this.finishRejectedMissingFile(block.uri)
-    } else {
-      await this.refreshChangedReviewFile(block.uri)
-    }
-    await this.refreshReviewPanel()
-
-    if (currentText === nextText) {
-      void vscode.window.showInformationMessage(t('message.rejectNoChange'))
-    }
-  }
-
-  async rejectBlockAndAdvance(item) {
-    const deletedPreviewUri = await this.getDeletedFilePreviewUriForItem(item)
-    const sourceViewColumn = this.getVisibleEditorViewColumn(deletedPreviewUri)
-    const nextItem = this.getPreferredNextReviewItem(item)
-    await this.rejectBlock(item)
-    await this.closeDeletedFilePreviewEditors(deletedPreviewUri)
-
-    if (nextItem && this.state === 'reviewing') {
-      await this.openBlock(nextItem, { viewColumn: sourceViewColumn })
-    }
-  }
-
-  async acceptFile(item) {
-    const file = this.findFileItem(item)
-    if (!file || !this.session) {
-      return
-    }
-
-    const pendingBlocks = file.blocks.filter((block) => block.status === 'pending')
-    if (pendingBlocks.length === 0) {
-      await this.maybeAutoComplete()
-      return
-    }
-
-    const uriString = file.uri.toString()
-    const document = await safeOpenDocument(uriString)
-    for (const block of pendingBlocks) {
-      block.status = 'accepted'
-    }
-    await this.setSessionBaselineText(uriString, document ? document.getText() : '')
-    this.session.reviewFiles.delete(uriString)
-    this.session.touchedUris.delete(uriString)
-    this.markReviewDataChanged()
-
-    this.treeProvider.refresh()
-    this.blockActionProvider.refresh()
-    this.updateStatusBar()
-    this.refreshDecorationsForUri(uriString)
-    if (document) {
-      await this.saveReviewDocument(file.uri)
-    }
-    await this.maybeAutoComplete()
-  }
-
-  async rejectFile(item) {
-    const file = this.findFileItem(item)
-    if (!file || !this.session) {
-      return
-    }
-
-    const result = await this.rejectPendingBlocksInFile(file)
-
-    if (!result.applied) {
-      void vscode.window.showWarningMessage(t('message.failedToRejectFile'))
-      return
-    }
-
-    if (result.deleted) {
-      await this.finishRejectedMissingFile(file.uri)
-    } else {
-      await this.refreshChangedReviewFile(file.uri)
-    }
-    await this.refreshReviewPanel()
-  }
-
-  async rejectPendingBlocksInFile(file) {
-    if (!file || !this.session) {
-      return { applied: false, deleted: false }
-    }
-
-    const pendingBlocks = file.blocks
-      .filter((block) => block.status === 'pending')
-      .sort((left, right) => {
-        if (left.modifiedStart !== right.modifiedStart) {
-          return right.modifiedStart - left.modifiedStart
-        }
-
-        return right.modifiedEnd - left.modifiedEnd
-      })
-
-    if (pendingBlocks.length === 0) {
-      return { applied: true, deleted: false }
-    }
-
-    const document = await safeOpenDocument(file.uri.toString())
-    let nextText = document ? document.getText() : ''
-    for (const block of pendingBlocks) {
-      nextText = rejectBlockFromDocumentText(nextText, block)
-    }
-
-    const deleted = nextText === '' && this.hasSessionMissingBaseline(file.uri.toString())
-    const applied = nextText === ''
-      ? await this.rejectUriToBaseline(file.uri, nextText)
-      : await this.applyTextToUri(file.uri, nextText)
-
-    return { applied, deleted }
-  }
-
-  async refreshChangedReviewFile(uri) {
-    if (!this.session || !uri) {
-      return
-    }
-
-    const uriString = uri.toString()
-    const document = await safeOpenDocument(uriString)
-    await this.rebuildFile(uriString, document)
-    this.dirtyWorkspaceUris.delete(uriString)
-    this.treeProvider.refresh()
-    this.blockActionProvider.refresh()
-    this.updateStatusBar()
-    this.refreshDecorationsForUri(uriString)
-    await this.maybeAutoComplete()
-  }
-
-  async acceptAllFiles() {
-    if (!this.session || this.state !== 'reviewing') {
-      return
-    }
-
-    const uris = [...this.session.reviewFiles.values()].map((file) => file.uri)
-    for (const uri of uris) {
-      await this.saveReviewDocument(uri)
-    }
-
-    await this.completeReview(t('message.acceptedRemaining'))
-  }
-
-  async rejectAllFiles() {
-    if (!this.session || this.state !== 'reviewing') {
-      return
-    }
-
-    const files = [...this.session.reviewFiles.values()]
-    for (const file of files) {
-      const result = await this.rejectPendingBlocksInFile(file)
-      if (!result.applied) {
-        void vscode.window.showWarningMessage(t('message.failedToRejectNamedFile', { file: toWorkspaceLabel(file.uri) }))
-        return
-      }
-    }
-
-    await this.completeReview(t('message.rejectedRemaining'))
-  }
-
-  findFileItem(item) {
-    if (!this.session || !item || item.kind !== 'file') {
-      return null
-    }
-
-    return this.session.reviewFiles.get(item.uri.toString()) ?? null
-  }
-
-  findBlockItem(item) {
-    if (!this.session || !item || item.kind !== 'block') {
-      return null
-    }
-
-    const file = this.session.reviewFiles.get(item.uri.toString())
-    if (!file) {
-      return null
-    }
-
-    let block = file.blocks.find((candidate) => candidate.id === item.blockId)
-    if (!block) {
-      block = findBestMatchingBlock(file.blocks, item)
-      if (block) {
-        syncReviewItem(item, createReviewItem(file.uri, block))
-      }
-    }
-
-    if (!block) {
-      return null
-    }
-
-    return {
-      uri: file.uri,
-      block
-    }
-  }
-
-  async maybeAutoComplete() {
-    if (this.state !== 'reviewing') {
-      return
-    }
-
-    if (this.getPendingBlockCount() === 0) {
-      await this.completeReview(t('message.allHandled'))
-    }
-  }
-
 }
 
 Object.assign(
   ReviewController.prototype,
   deletedPreviewControllerMethods,
   decorationControllerMethods,
+  reviewActionControllerMethods,
   reviewPanelControllerMethods,
+  sessionControllerMethods,
+  workspaceScanControllerMethods,
   statusControllerMethods
 )
 
@@ -2896,6 +1755,28 @@ function formatByteCount(bytes) {
   }
 
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+function collectStaleSnapshotPaths(previousEntriesByUri, nextEntriesByUri) {
+  const nextSnapshotPaths = new Set()
+  for (const entry of nextEntriesByUri.values()) {
+    if (entry?.kind === 'snapshot' && entry.snapshotPath) {
+      nextSnapshotPaths.add(entry.snapshotPath)
+    }
+  }
+
+  const staleSnapshotPaths = new Set()
+  for (const entry of previousEntriesByUri.values()) {
+    if (
+      entry?.kind === 'snapshot' &&
+      entry.snapshotPath &&
+      !nextSnapshotPaths.has(entry.snapshotPath)
+    ) {
+      staleSnapshotPaths.add(entry.snapshotPath)
+    }
+  }
+
+  return staleSnapshotPaths
 }
 
 module.exports = {

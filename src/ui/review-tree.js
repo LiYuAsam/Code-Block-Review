@@ -31,6 +31,7 @@ class ReviewTreeProvider {
     return element
   }
 
+  // Provides the Explorer tree contents for idle, capturing, ready, and reviewing states.
   getChildren(element) {
     if (!this.controller.session) {
       if (this.controller.autoCaptureSettings.enabled && this.controller.autoCaptureState === 'armed') {
@@ -74,6 +75,7 @@ class ReviewBlockCodeLensProvider {
     this._onDidChangeCodeLenses.fire()
   }
 
+  // Adds inline review actions beneath pending blocks in live or deleted-preview documents.
   provideCodeLenses(document) {
     if (this.controller.state !== 'reviewing' || !this.controller.session) {
       return []
