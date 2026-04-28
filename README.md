@@ -11,6 +11,16 @@ It works well for:
 - manual follow-up edits
 - mixed sessions where AI and human changes happen together
 
+## Demo
+
+Try the live demo here: [code-block-review-demo.html](https://liyuasam.github.io/Code-Block-Review/code-block-review-demo.html).
+
+### Usage Preview
+
+VS Code with inline block highlights, the Explorer review tree, and the dedicated review panel:
+
+![Code Block Review usage preview](./images/code-block-review-usage.png)
+
 ## Why It Exists
 
 Modern coding tools can change multiple files quickly, but the resulting edits often land in the working tree as ordinary file modifications. That makes review harder than it should be.
@@ -50,12 +60,6 @@ Code Block Review adds a lightweight review layer on top of your workspace:
 - Capture / Ready sessions are released when the underlying Git HEAD/ref changes, avoiding stale reviews after branch switches
 - Localized settings, command titles, status bar text, notifications, Explorer tree text, and CodeLens labels based on the VS Code/Cursor display language
 - Ignore rules for lockfiles, generated files, snapshots, and other noisy outputs
-
-## Demo
-
-Try the live demo here: [code-block-review-demo.html](https://liyuasam.github.io/Code-Block-Review/code-block-review-demo.html).
-
-The source file is also included in this repo if you want to inspect or update it locally.
 
 ## How It Works
 

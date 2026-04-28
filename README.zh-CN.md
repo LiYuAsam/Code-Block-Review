@@ -11,6 +11,16 @@ Code Block Review 是一个 VS Code 扩展，用来把工作区里的代码改�
 - 人工在 AI 改动基础上的补充修改
 - AI 与人工混合编辑的工作流
 
+## Demo 演示页
+
+在线演示页地址：[code-block-review-demo.html](https://liyuasam.github.io/Code-Block-Review/code-block-review-demo.html)。
+
+### 使用示意图
+
+VS Code 中的代码块高亮、Explorer 待审树和右侧 review panel：
+
+![Code Block Review 使用示意图](./images/code-block-review-usage.png)
+
 ## 为什么要做它
 
 现在很多编码工具都能在很短时间内改动多个文件，但这些改动最后通常只是普通的 working tree 变化，用户很难快速看清“这轮到底改了什么”。
@@ -50,12 +60,6 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - capture / Ready 状态下检测到底层 Git HEAD/ref 变化时，会自动释放旧会话，避免切分支后继续 review 过期改动
 - 根据 VS Code/Cursor 显示语言本地化设置页、命令、状态栏、通知、Explorer 树和 CodeLens 文案
 - 支持忽略 lockfile、生成文件、快照文件等噪音改动
-
-## Demo 演示页
-
-在线演示页地址：[code-block-review-demo.html](https://liyuasam.github.io/Code-Block-Review/code-block-review-demo.html)。
-
-仓库里也保留了对应的 HTML 源文件，方便你在本地继续修改和维护。
 
 ## 使用方式
 
