@@ -34,32 +34,12 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 
 ## 功能特性
 
-- 手动启动 review session：`Code Block Review: Start Review Session`
-- 常驻自动捕获：识别 AI / 工具式的大改动、跨文件改动和 burst 式改动
-- 以代码块为中心审查改动，而不是只看文件级 diff
-- 在 Explorer 侧边栏按文件和代码块展示待审改动，并支持从侧边栏打开 review panel
-- 在编辑器内用不同颜色区分新增、修改、删除和当前 review 代码块；修改块使用蓝色标识
-- 可选地在编辑器内用 inline badge 标出 `ADDED`、`REPLACED`、`DELETED`
-- review panel 中对 replace 类型代码块支持 token 级差异高亮
-- 删除块会在删除位置显示红色行内摘要，完整 baseline 代码可在 hover 和 review panel 中查看
-- 整个文件被删除时，review 该文件的删除块会打开带红色删除标识的只读 baseline 预览
-- 每个待审代码块下方提供编辑器内 CodeLens 操作：
-  - `Accept`
-  - `Reject`
-  - `Prev Block`
-  - `Next Block`
-  - `Review`
-- 提供专门的 review panel，支持：
-  - 上一个 / 下一个代码块
-  - 接受 / 拒绝当前代码块
-  - 接受 / 拒绝当前文件
-  - 接受 / 拒绝全部剩余文件
-- 文件级和全部文件级 Accept / Reject 只会处理剩余 pending 代码块，不会重复改动已处理过的 block
-- 自动捕获支持大工作区范围控制：整个 workspace、当前项目、或近期触达的项目
-- Ready 状态下如果会话过大，会提示尽快 review 或 skip，以释放内存和临时 baseline 快照
-- capture / Ready 状态下检测到底层 Git HEAD/ref 变化时，会自动释放旧会话，避免切分支后继续 review 过期改动
-- 根据 VS Code/Cursor 显示语言本地化设置页、命令、状态栏、通知、Explorer 树和 CodeLens 文案
-- 支持忽略 lockfile、生成文件、快照文件等噪音改动
+- 手动启动 review session，或让常驻自动捕获识别 AI / 工具式批量改动。
+- 以新增、替换、删除代码块为单位审查改动，而不是只看整文件 diff。
+- 直接在编辑器里通过行内高亮、删除摘要和 CodeLens 操作完成 review。
+- 通过 Explorer 待审树或专门的 review panel 做块级导航和对比。
+- 支持接受 / 拒绝单个代码块、当前文件，或全部剩余待处理改动。
+- 支持忽略规则、范围化 baseline 和本地化设置，适配噪音较多或体量较大的工作区。
 
 ## 使用方式
 
@@ -91,27 +71,11 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 - 或者什么都不做，让这轮改动静默吸收到新的 baseline 中
 - 默认 Ready 等待时间是 120 秒
 - 将 `codexReview.autoCapture.reviewOfferSeconds` 设置为 `0` 时，会关闭自动超时，Ready 会一直等待你手动 review 或 skip
-- 如果 Ready 会话包含大量 pending block、review 文本或 baseline 快照，扩展会弹出 warning 提醒尽快处理
-- 如果这期间 Git HEAD/ref 发生变化，例如切分支，capture / Ready 会话会自动释放并回到 Auto Armed
+- 如果这期间 Git HEAD/ref 发生变化，例如切分支，capture / Ready 会话会自动释放，避免继续 review 过期改动
 
 ### 自动捕获判定方式
 
-自动捕获使用的是一个短时间观察窗口，而不是把每一次编辑事件单独拿出来做硬判断。
-
-- `observationWindowSeconds`
-  控制首波改动会被观察多久，再决定是否进入 capture。
-- `largeChangeLines` / `largeChangeChars`
-  单次改动已经很大时，会直接触发 capture。
-- `multiFileMinFiles` + `multiFileMinLines`
-  跨文件改动会被视为比普通手动输入更可疑。
-- `burstMinLines`
-  统计观察窗口内触达的唯一行数；同一行上的重复编辑不会无限累加。
-- `burstEventWindowMilliseconds` + `burstMinEvents`
-  这是高频事件的辅助信号。现在它不会单独触发 capture，只会轻微放宽多文件或 burst 行数阈值。
-- `autoCapture.scope`
-  控制大工作区中 baseline 的扫描范围。默认 `touchedProjects` 会覆盖当前项目和近期触达过的项目，同时避免把旧的未改动文件误纳入 review。
-- `autoCapture.projectRootMarkers`
-  用于识别子项目根目录，默认包含 `package.json`、`go.mod`、`pom.xml`、`Cargo.toml`、`.git` 等常见标志。
+自动捕获使用短时间观察窗口来判断一轮改动是否更像 AI / 工具批量写入。它主要关注单次大改动、跨文件协同改动，以及短时间内大量唯一行发生变化；特别密集的编辑事件只作为辅助信号，不会单独触发 capture。
 
 实际判定顺序可以简化成下面这样：
 
@@ -122,19 +86,17 @@ Code Block Review 在工作区上方补了一层轻量的 review 能力：
 | 短窗口内累计改动了很多唯一行 | `burstMinLines` | 进入 capture |
 | 编辑事件非常密集 | `burstEventWindowMilliseconds` + `burstMinEvents` | 只作为辅助，不单独触发 |
 
+对于大型多项目工作区，`codexReview.autoCapture.scope` 可以控制 baseline 扫描范围。默认的 `touchedProjects` 会聚焦当前项目和近期触达过的项目。
+
 ## 配置项
 
 当前支持的配置主要包括：
 
 - 忽略文件模式
 - 可选的行内代码块标签
-- 常驻自动捕获
-- baseline 刷新触发条件
-- 面向大型多项目工作区的可选范围化自动捕获 baseline
-- 进入 review 前的空闲等待时间
-- Ready 状态的等待时长，默认 120 秒；`codexReview.autoCapture.reviewOfferSeconds = 0` 会关闭自动跳过，并持续保留当前 review session 直到手动处理
-- burst 检测阈值
-- profiler 诊断日志开关
+- 自动捕获行为、范围和时序
+- Ready 状态等待时长；`codexReview.autoCapture.reviewOfferSeconds = 0` 会持续保留当前 review session 直到手动处理
+- burst 检测阈值和诊断日志
 
 完整配置请直接在扩展设置面板中查看。
 

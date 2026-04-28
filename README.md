@@ -34,32 +34,12 @@ Code Block Review adds a lightweight review layer on top of your workspace:
 
 ## Features
 
-- Manual review sessions with `Code Block Review: Start Review Session`
-- Always-on automatic capture for AI/tool-like large edits, multi-file edits, and bursty edit sessions
-- Block-based review instead of file-only diff review
-- Explorer sidebar that groups pending changes by file and block, with quick access to the review panel
-- Distinct editor highlights for added, modified, deleted, and currently selected review blocks; modified blocks use blue styling
-- Optional inline block badges for `ADDED`, `REPLACED`, and `DELETED` changes
-- Token-level difference highlighting for replaced blocks inside the review panel
-- Deleted blocks show a red inline summary at the deletion point, with full baseline code available in hover and the review panel
-- Fully deleted files open a read-only baseline preview with red deleted-file styling
-- Editor-first CodeLens review actions under each pending block:
-  - `Accept`
-  - `Reject`
-  - `Prev Block`
-  - `Next Block`
-  - `Review`
-- Dedicated review panel with:
-  - previous / next navigation
-  - accept / reject block
-  - accept / reject current file
-  - accept / reject all remaining files
-- File-level and all-files Accept / Reject actions only handle remaining pending blocks, so already handled blocks stay unchanged
-- Scoped auto-capture baselines for large workspaces: entire workspace, active project, or recently touched projects
-- Large Ready sessions warn when they keep significant review text or baseline snapshots around
-- Capture / Ready sessions are released when the underlying Git HEAD/ref changes, avoiding stale reviews after branch switches
-- Localized settings, command titles, status bar text, notifications, Explorer tree text, and CodeLens labels based on the VS Code/Cursor display language
-- Ignore rules for lockfiles, generated files, snapshots, and other noisy outputs
+- Start a manual review session, or let always-on auto capture detect AI/tool-like edit bursts.
+- Review changes as added, replaced, and deleted code blocks instead of scanning full-file diffs.
+- Work directly in the editor with inline highlights, deletion summaries, and CodeLens actions.
+- Use the Explorer review tree or the dedicated review panel for block-by-block navigation and comparison.
+- Accept or reject a single block, the current file, or all remaining pending changes.
+- Tune auto capture for noisy or large workspaces with ignore rules, scoped baselines, and localized settings.
 
 ## How It Works
 
@@ -91,36 +71,22 @@ After capture goes idle:
 - or let the session expire and silently merge into the new baseline
 - the default Ready wait time is 120 seconds
 - set `codexReview.autoCapture.reviewOfferSeconds` to `0` to keep Ready sessions waiting indefinitely until you review or skip them manually
-- large Ready sessions show a warning if they hold many pending blocks, review text, or baseline snapshots
-- if Git HEAD/ref changes during capture or Ready, the session is released and the extension returns to Auto Armed
+- if Git HEAD/ref changes during capture or Ready, the session is released to avoid stale reviews after branch switches
 
 ### Auto-capture heuristics
 
-Auto capture uses a short observation window instead of trying to classify every single edit event in isolation.
+Auto capture uses a short observation window. It starts a review session when it sees signals such as a large single edit, coordinated multi-file changes, or many unique lines changing in a burst. Very dense edit events are treated as a supporting signal, not as the only reason to start capture.
 
-- `observationWindowSeconds`
-  Controls how long the extension watches the first burst of edits before deciding.
-- `largeChangeLines` / `largeChangeChars`
-  A single large edit can trigger capture immediately.
-- `multiFileMinFiles` + `multiFileMinLines`
-  Cross-file edits are treated as more suspicious than ordinary typing.
-- `burstMinLines`
-  Counts unique touched lines inside the observation window, so repeated edits on the same line do not keep inflating the score.
-- `burstEventWindowMilliseconds` + `burstMinEvents`
-  A rapid-event assist signal. High event density no longer triggers capture by itself; it only slightly relaxes nearby multi-file or burst-line thresholds.
-- `autoCapture.scope`
-  Controls how much of a large workspace is scanned into the baseline. The default `touchedProjects` covers the active project and recently touched project roots while avoiding old untouched files becoming review candidates.
-- `autoCapture.projectRootMarkers`
-  Helps detect subproject roots. Defaults include common markers such as `package.json`, `go.mod`, `pom.xml`, `Cargo.toml`, and `.git`.
-
-In practice, the extension decides in this order:
+In practice, the decision order is:
 
 | Situation | Main signal | Result |
 | --- | --- | --- |
 | One edit is already very large | `largeChangeLines` or `largeChangeChars` | Capture starts |
 | Multiple files change together | `multiFileMinFiles` and `multiFileMinLines` | Capture starts |
 | Many unique lines change inside the short window | `burstMinLines` | Capture starts |
-| Edit events are extremely dense | `burstEventWindowMilliseconds` + `burstMinEvents` | Only assists the two rules above |
+| Edit events are extremely dense | `burstEventWindowMilliseconds` + `burstMinEvents` | Only assists the rules above |
+
+For large multi-project workspaces, `codexReview.autoCapture.scope` controls how much of the workspace is scanned into the baseline. The default `touchedProjects` focuses on the active and recently touched projects.
 
 ## Configuration
 
@@ -128,13 +94,9 @@ The extension currently supports configuration for:
 
 - ignored file globs
 - optional inline block badges
-- always-on auto capture
-- baseline refresh triggers
-- optional scoped auto-capture baselines for large multi-project workspaces
-- idle timing before review becomes available
-- review offer timeout, defaulting to 120 seconds; `codexReview.autoCapture.reviewOfferSeconds = 0` disables auto-dismiss and keeps the current review session in memory until handled
-- burst-detection thresholds
-- profiler diagnostic logging
+- auto capture behavior, scope, and timing
+- review offer timeout; set `codexReview.autoCapture.reviewOfferSeconds` to `0` to keep Ready sessions until they are handled manually
+- burst-detection thresholds and diagnostic logging
 
 Open the extension settings panel for the full list.
 
