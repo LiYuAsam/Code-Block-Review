@@ -3,6 +3,7 @@ const AUTO_CAPTURE_TRIGGER_WINDOW_FOCUS = 'windowFocus'
 const AUTO_CAPTURE_TRIGGER_ACTIVE_EDITOR_CHANGE = 'activeEditorChange'
 const GIT_ACTIVITY_SUPPRESSION_WINDOW_MS = 4000
 const WORKSPACE_RESCAN_DEBOUNCE_MS = 200
+const AUTO_CAPTURE_REVIEW_OFFER_COUNTDOWN_INTERVAL_MS = 10000
 const LARGE_REVIEW_SESSION_PENDING_BLOCK_WARNING = 200
 const LARGE_REVIEW_SESSION_TEXT_WARNING_BYTES = 5 * 1024 * 1024
 const LARGE_REVIEW_SESSION_SNAPSHOT_WARNING_BYTES = 20 * 1024 * 1024
@@ -80,6 +81,8 @@ class ReviewController {
     this.autoCaptureState = 'idle'
     this.autoCaptureStopTimer = null
     this.autoCaptureReviewOfferTimer = null
+    this.autoCaptureReviewOfferCountdownTimer = null
+    this.autoCaptureReviewOfferDeadlineAt = 0
     this.autoCaptureObservationTimer = null
     this.autoCaptureBaselineRefreshPromise = null
     this.workspaceRescanTimer = null
@@ -339,6 +342,11 @@ class ReviewController {
       clearTimeout(this.autoCaptureReviewOfferTimer)
       this.autoCaptureReviewOfferTimer = null
     }
+    if (this.autoCaptureReviewOfferCountdownTimer) {
+      clearInterval(this.autoCaptureReviewOfferCountdownTimer)
+      this.autoCaptureReviewOfferCountdownTimer = null
+    }
+    this.autoCaptureReviewOfferDeadlineAt = 0
   }
 
   clearAutoObservationTimer() {
@@ -973,14 +981,22 @@ class ReviewController {
 
     this.clearAutoReviewOfferTimer()
     if (this.autoCaptureSettings.reviewOfferMs <= 0) {
+      this.updateStatusBar()
       return
     }
 
+    this.autoCaptureReviewOfferDeadlineAt = Date.now() + this.autoCaptureSettings.reviewOfferMs
     this.autoCaptureReviewOfferTimer = setTimeout(() => {
       if (this.sessionMode === 'auto' && this.state === 'capturing' && this.autoCaptureReviewPending) {
         void this.completeReview(null, { silent: true })
       }
     }, this.autoCaptureSettings.reviewOfferMs)
+    this.autoCaptureReviewOfferCountdownTimer = setInterval(() => {
+      if (this.sessionMode === 'auto' && this.state === 'capturing' && this.autoCaptureReviewPending) {
+        this.updateStatusBar()
+      }
+    }, AUTO_CAPTURE_REVIEW_OFFER_COUNTDOWN_INTERVAL_MS)
+    this.updateStatusBar()
   }
 
   promptAutoReviewOffer() {

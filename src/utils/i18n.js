@@ -22,7 +22,7 @@ const messages = {
     'status.baselinePending': '$(pulse) Code Block Review: Baseline Pending',
     'status.autoArmed': '$(pulse) Code Block Review: Auto Armed',
     'tooltip.readyIndefinite': 'Open review now. Auto-dismiss is disabled, so this capture will keep waiting until you review it or run Complete Review to skip it.',
-    'tooltip.readyTimed': 'Open review now. If you do nothing, this automatic capture will be dismissed after a short grace period and the current workspace will become the new baseline.',
+    'tooltip.readyTimed': 'Open review now. If you do nothing, this automatic capture will be dismissed in {remaining} and the current workspace will become the new baseline.',
     'tooltip.openAutoCaptureReview': 'Open review mode for this automatic capture',
     'tooltip.stopCapture': 'Stop capture and enter review mode',
     'tooltip.openReviewPanel': 'Open the Code Block Review Panel',
@@ -78,6 +78,8 @@ const messages = {
     'unit.pendingBlocks': '{count} pending blocks',
     'unit.reviewText': '{size} of review block text',
     'unit.snapshots': '{size} of baseline snapshots',
+    'unit.time.minutesSeconds': '{minutes}m {seconds}s',
+    'unit.time.seconds': '{seconds}s',
     'unit.block.singular': 'block',
     'unit.block.plural': 'blocks'
   },
@@ -99,7 +101,7 @@ const messages = {
     'status.baselinePending': '$(pulse) Code Block Review：Baseline 待同步',
     'status.autoArmed': '$(pulse) Code Block Review：自动监测中',
     'tooltip.readyIndefinite': '立即打开 review。自动超时已关闭，本次捕获会一直等待，直到你进入 review 或运行 Complete Review 跳过。',
-    'tooltip.readyTimed': '立即打开 review。如果不处理，自动捕获会在短暂等待后静默退出，并把当前工作区同步为新的 baseline。',
+    'tooltip.readyTimed': '立即打开 review。如果不处理，自动捕获会在 {remaining} 后静默退出，并把当前工作区同步为新的 baseline。',
     'tooltip.openAutoCaptureReview': '打开本次自动捕获的 review 模式',
     'tooltip.stopCapture': '停止捕获并进入 review 模式',
     'tooltip.openReviewPanel': '打开 Code Block Review 面板',
@@ -155,6 +157,8 @@ const messages = {
     'unit.pendingBlocks': '{count} 个待处理代码块',
     'unit.reviewText': '{size} review 代码文本',
     'unit.snapshots': '{size} baseline 快照',
+    'unit.time.minutesSeconds': '{minutes} 分 {seconds} 秒',
+    'unit.time.seconds': '{seconds} 秒',
     'unit.block.singular': 'block',
     'unit.block.plural': 'blocks'
   }

@@ -10,7 +10,7 @@ const statusControllerMethods = {
         this.statusBarItem.command = 'codexReview.enterReadyReview'
         this.statusBarItem.tooltip = this.autoCaptureSettings.reviewOfferMs <= 0
           ? t('tooltip.readyIndefinite')
-          : t('tooltip.readyTimed')
+          : t('tooltip.readyTimed', { remaining: this.getAutoCaptureReviewOfferRemainingText() })
         this.statusBarItem.show()
         return
       }
@@ -77,6 +77,23 @@ const statusControllerMethods = {
     }
 
     return t('tooltip.baselineNotReady')
+  },
+
+  // Formats the live grace-period countdown shown in the Ready status tooltip.
+  getAutoCaptureReviewOfferRemainingText() {
+    const deadlineAt = this.autoCaptureReviewOfferDeadlineAt ?? 0
+    const fallbackMs = this.autoCaptureSettings.reviewOfferMs ?? 0
+    const remainingMs = deadlineAt > 0 ? deadlineAt - Date.now() : fallbackMs
+    const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000))
+
+    if (remainingSeconds >= 60) {
+      return t('unit.time.minutesSeconds', {
+        minutes: Math.floor(remainingSeconds / 60),
+        seconds: remainingSeconds % 60
+      })
+    }
+
+    return t('unit.time.seconds', { seconds: remainingSeconds })
   },
 
   // Publishes controller state into VS Code when-clauses for menus, views, and commands.
