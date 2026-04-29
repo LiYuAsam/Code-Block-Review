@@ -1,5 +1,7 @@
 const vscode = require('vscode')
 const path = require('path')
+const { execFile } = require('child_process')
+const { promisify } = require('util')
 
 const {
   hashText,
@@ -9,6 +11,7 @@ const {
 
 const WORKSPACE_INCLUDE_GLOB = '**/*'
 const WORKSPACE_EXCLUDE_GLOB = '**/{.git,node_modules,dist,build,out,.next,.turbo,.cache,coverage}/**'
+const execFileAsync = promisify(execFile)
 
 // Hashes the current workspace-folder set into a filesystem-safe baseline bucket key.
 function getWorkspaceBaselineKey() {
@@ -144,6 +147,135 @@ async function readGitRepositoryStateForRoot(repoRootUri) {
   }
 
   return readGitRepositoryStateFromMarker(repoRootUri.fsPath, path.join(repoRootUri.fsPath, '.git'))
+}
+
+async function readGitHeadTextForUri(uri) {
+  if (!uri || uri.scheme !== 'file') {
+    return null
+  }
+
+  const state = await readGitRepositoryStateForUri(uri)
+  if (!state?.repoRoot) {
+    return null
+  }
+
+  let repoRootUri
+  try {
+    repoRootUri = vscode.Uri.parse(state.repoRoot)
+  } catch {
+    return null
+  }
+
+  if (repoRootUri.scheme !== 'file') {
+    return null
+  }
+
+  const relativePath = path.relative(repoRootUri.fsPath, uri.fsPath).replace(/\\/g, '/')
+  if (!relativePath || relativePath.startsWith('../') || path.isAbsolute(relativePath)) {
+    return null
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', repoRootUri.fsPath, 'show', `HEAD:${relativePath}`],
+      {
+        encoding: 'utf8',
+        maxBuffer: 5 * 1024 * 1024
+      }
+    )
+    return stdout
+  } catch {
+    return null
+  }
+}
+
+async function listGitChangedWorkspaceFiles() {
+  const repoRootsByKey = new Map()
+
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const repoRoot = await findGitRepositoryRoot(folder.uri)
+    if (repoRoot) {
+      repoRootsByKey.set(repoRoot.toString(), repoRoot)
+    }
+  }
+
+  const urisByKey = new Map()
+  const scannedRepoRoots = new Set()
+  for (const repoRoot of repoRootsByKey.values()) {
+    const changedUris = await listGitChangedFilesForRepoRoot(repoRoot)
+    if (!changedUris) {
+      continue
+    }
+
+    scannedRepoRoots.add(repoRoot.toString())
+    for (const uri of changedUris) {
+      if (vscode.workspace.getWorkspaceFolder(uri) && isTrackableUri(uri)) {
+        urisByKey.set(uri.toString(), uri)
+      }
+    }
+  }
+
+  return {
+    uris: [...urisByKey.values()],
+    scannedRepoRoots
+  }
+}
+
+async function findGitRepositoryRoot(uri) {
+  if (!uri || uri.scheme !== 'file') {
+    return null
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', uri.fsPath, 'rev-parse', '--show-toplevel'],
+      { encoding: 'utf8', maxBuffer: 1024 * 1024 }
+    )
+    const rootPath = stdout.trim()
+    return rootPath ? vscode.Uri.file(rootPath) : null
+  } catch {
+    return null
+  }
+}
+
+async function listGitChangedFilesForRepoRoot(repoRoot) {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', repoRoot.fsPath, 'status', '--porcelain', '-z', '--untracked-files=all'],
+      { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+    )
+    return parseGitStatusPorcelain(stdout)
+      .map((relativePath) => vscode.Uri.file(path.join(repoRoot.fsPath, relativePath)))
+  } catch {
+    return null
+  }
+}
+
+function parseGitStatusPorcelain(output) {
+  const paths = []
+  const entries = String(output || '').split('\0')
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]
+    if (!entry) {
+      continue
+    }
+
+    const status = entry.slice(0, 2)
+    const relativePath = entry.slice(3)
+    if (relativePath) {
+      paths.push(relativePath)
+    }
+
+    if (status.includes('R') || status.includes('C')) {
+      index += 1
+    }
+  }
+
+  return paths
 }
 
 async function getUriDirectoryPath(uri) {
@@ -288,7 +420,7 @@ function buildWorkspaceScanCandidates(options) {
 
     try {
       const parsedUri = vscode.Uri.parse(uriString)
-      if (parsedUri.scheme === 'file' || parsedUri.scheme === 'untitled') {
+      if (isTrackableUri(parsedUri)) {
         candidateUris.set(uriString, parsedUri)
       }
     } catch {}
@@ -306,6 +438,8 @@ module.exports = {
   getWorkspaceBaselineKey,
   getWorkspaceKeyForUri,
   isGitMetadataUri,
+  listGitChangedWorkspaceFiles,
+  readGitHeadTextForUri,
   readGitRepositoryStateForRoot,
   readGitRepositoryStateForUri,
   shouldRunFullWorkspaceScan

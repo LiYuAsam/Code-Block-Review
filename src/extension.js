@@ -55,6 +55,8 @@ const {
   getWorkspaceBaselineKey,
   getWorkspaceKeyForUri,
   isGitMetadataUri,
+  listGitChangedWorkspaceFiles,
+  readGitHeadTextForUri,
   readGitRepositoryStateForRoot,
   readGitRepositoryStateForUri
 } = require('./utils/workspace')
@@ -110,9 +112,11 @@ class ReviewController {
     this.autoCaptureBaselineWorkspaceKey = getWorkspaceBaselineKey()
     this.autoCaptureBaselineEntriesByUri = new Map()
     this.autoCaptureBaselineSnapshotDirectory = null
+    this.autoCaptureGitDirtyUrisAtBaseline = new Set()
+    this.autoCaptureGitStatusRootsAtBaseline = new Set()
     this.autoCaptureCandidateBaselineByUri = new Map()
     this.autoCaptureEvidence = []
-    this.autoCaptureFilesystemProbeUris = new Set()
+    this.autoCaptureFilesystemProbeUris = new Map()
     this.recentSaveEventsByUri = new Map()
     this.autoCaptureReviewPending = false
     this.autoCaptureReviewPromptNonce = 0
@@ -459,7 +463,7 @@ class ReviewController {
         }
       }
 
-      for (const uriString of this.autoCaptureFilesystemProbeUris) {
+      for (const uriString of this.autoCaptureFilesystemProbeUris.keys()) {
         const root = await this.getProjectRootForUriString(uriString)
         if (root) {
           rootsByKey.set(root.toString(), root)
@@ -729,6 +733,8 @@ class ReviewController {
     this.autoCaptureBaselineRefreshPromise = (async () => {
       const profile = this.profiler.startMark('refreshAutoCaptureBaseline')
       const nextEntriesByUri = new Map()
+      let nextGitDirtyUrisAtBaseline = new Set()
+      let nextGitStatusRootsAtBaseline = new Set()
       let reusedCount = 0
       let updatedCount = 0
 
@@ -759,8 +765,12 @@ class ReviewController {
           }
         }
 
+        const gitChangedFiles = await listGitChangedWorkspaceFiles()
+        nextGitDirtyUrisAtBaseline = new Set(gitChangedFiles.uris.map((uri) => uri.toString()))
+        nextGitStatusRootsAtBaseline = gitChangedFiles.scannedRepoRoots
+
         const workspaceFiles = await this.listAutoCaptureBaselineFiles()
-        for (const uri of workspaceFiles) {
+        for (const uri of [...workspaceFiles, ...gitChangedFiles.uris]) {
           const key = uri.toString()
           if (nextEntriesByUri.has(key)) {
             continue
@@ -799,6 +809,8 @@ class ReviewController {
           nextEntriesByUri
         )
         this.autoCaptureBaselineEntriesByUri = nextEntriesByUri
+        this.autoCaptureGitDirtyUrisAtBaseline = nextGitDirtyUrisAtBaseline
+        this.autoCaptureGitStatusRootsAtBaseline = nextGitStatusRootsAtBaseline
         await cleanupSnapshotFiles(staleSnapshotPaths)
         this.lastAutoCaptureBaselineRefreshAt = Date.now()
         this.autoCaptureBaselineStatus = 'ready'
@@ -815,6 +827,8 @@ class ReviewController {
           fileCount: nextEntriesByUri.size,
           baselineEntryCount: this.autoCaptureBaselineEntriesByUri.size,
           candidateCount: this.autoCaptureCandidateBaselineByUri.size,
+          gitDirtyFileCount: this.autoCaptureGitDirtyUrisAtBaseline.size,
+          gitStatusRootCount: this.autoCaptureGitStatusRootsAtBaseline.size,
           snapshotDir: this.autoCaptureBaselineSnapshotDirectory ? 'ready' : 'missing',
           reusedCount,
           updatedCount
@@ -850,6 +864,8 @@ class ReviewController {
     this.clearAutoObservationTimer()
     this.autoCaptureState = 'idle'
     this.autoCaptureBaselineEntriesByUri = new Map()
+    this.autoCaptureGitDirtyUrisAtBaseline = new Set()
+    this.autoCaptureGitStatusRootsAtBaseline = new Set()
     this.autoCaptureCandidateBaselineByUri = new Map()
     this.autoCaptureEvidence = []
     this.autoCaptureReviewPending = false
@@ -1229,6 +1245,21 @@ class ReviewController {
   // Records edit burst evidence that may later cross the auto-capture threshold.
   async recordAutoCaptureEvidence(event) {
     const uriString = event.document.uri.toString()
+    if (
+      !this.hasAutoCaptureIdleBaseline(uriString) &&
+      !this.autoCaptureCandidateBaselineByUri.has(uriString)
+    ) {
+      const gitHeadText = await this.getFallbackAutoCaptureBaselineText(
+        event.document.uri,
+        'change',
+        event.document.getText()
+      )
+      this.autoCaptureCandidateBaselineByUri.set(
+        uriString,
+        gitHeadText === null ? { kind: 'missing' } : gitHeadText
+      )
+    }
+
     this.autoCaptureEvidence.push({
       timestamp: Date.now(),
       uri: uriString,
@@ -1458,7 +1489,7 @@ class ReviewController {
       return
     }
 
-    this.scheduleAutoCaptureFilesystemProbe(uri)
+    this.scheduleAutoCaptureFilesystemProbe(uri, kind)
   }
 
   scheduleWorkspaceRescan(reason = 'watcher', delayMs = WORKSPACE_RESCAN_DEBOUNCE_MS) {
@@ -1496,8 +1527,10 @@ class ReviewController {
     }
   }
 
-  scheduleAutoCaptureFilesystemProbe(uri) {
-    this.autoCaptureFilesystemProbeUris.add(uri.toString())
+  scheduleAutoCaptureFilesystemProbe(uri, kind = 'change') {
+    const uriString = uri.toString()
+    const previousKind = this.autoCaptureFilesystemProbeUris.get(uriString)
+    this.autoCaptureFilesystemProbeUris.set(uriString, previousKind === 'create' ? previousKind : kind)
     if (this.autoCaptureFilesystemProbeTimer) {
       return
     }
@@ -1521,10 +1554,10 @@ class ReviewController {
       return
     }
 
-    const pendingUriStrings = [...this.autoCaptureFilesystemProbeUris]
+    const pendingEntries = [...this.autoCaptureFilesystemProbeUris.entries()]
     this.autoCaptureFilesystemProbeUris.clear()
 
-    for (const uriString of pendingUriStrings) {
+    for (const [uriString, kind] of pendingEntries) {
       const uri = vscode.Uri.parse(uriString)
       if (!isTrackableUri(uri)) {
         continue
@@ -1532,14 +1565,19 @@ class ReviewController {
 
       const existsInWorkspace = await uriExists(uri)
       const currentText = await getCurrentTrackedText(uri, existsInWorkspace)
+      const hasIdleBaseline = this.hasAutoCaptureIdleBaseline(uriString)
       const baselineText = await this.getAutoCaptureCandidateBaselineText(uriString)
+      const fallbackBaselineText = hasIdleBaseline
+        ? null
+        : await this.getFallbackAutoCaptureBaselineText(uri, kind, currentText)
+      const effectiveBaselineText = fallbackBaselineText ?? baselineText
 
-      if (currentText === null && !this.hasAutoCaptureIdleBaseline(uriString)) {
+      if (currentText === null && !hasIdleBaseline) {
         this.dropAutoCaptureEvidenceForUri(uriString)
         continue
       }
 
-      if (currentText === baselineText) {
+      if (currentText === effectiveBaselineText) {
         this.dropAutoCaptureEvidenceForUri(uriString)
         continue
       }
@@ -1547,14 +1585,16 @@ class ReviewController {
       if (!this.autoCaptureCandidateBaselineByUri.has(uriString)) {
         this.autoCaptureCandidateBaselineByUri.set(
           uriString,
-          this.hasAutoCaptureIdleBaseline(uriString) ? baselineText : { kind: 'missing' }
+          hasIdleBaseline
+            ? effectiveBaselineText
+            : fallbackBaselineText ?? { kind: 'missing' }
         )
       }
       this.autoCaptureEvidence = this.autoCaptureEvidence.filter((entry) => entry.uri !== uriString)
       this.autoCaptureEvidence.push({
         timestamp: Date.now(),
         uri: uriString,
-        ...summarizeTextDelta(baselineText, currentText ?? '')
+        ...summarizeTextDelta(effectiveBaselineText, currentText ?? '')
       })
     }
 
@@ -1572,6 +1612,28 @@ class ReviewController {
     this.scheduleAutoCaptureObservationTimeout()
     this.updateStatusBar()
     await this.syncContexts()
+  }
+
+  async getFallbackAutoCaptureBaselineText(uri, kind, currentText) {
+    if (kind === 'create' || currentText === null) {
+      return null
+    }
+
+    const state = await readGitRepositoryStateForUri(uri)
+    if (
+      !state?.repoRoot ||
+      !this.autoCaptureGitStatusRootsAtBaseline.has(state.repoRoot) ||
+      this.autoCaptureGitDirtyUrisAtBaseline.has(uri.toString())
+    ) {
+      return null
+    }
+
+    const gitHeadText = await readGitHeadTextForUri(uri)
+    if (gitHeadText === null || gitHeadText === currentText) {
+      return null
+    }
+
+    return gitHeadText
   }
 
   // Promotes the armed baseline and collected evidence into a real auto capture session.

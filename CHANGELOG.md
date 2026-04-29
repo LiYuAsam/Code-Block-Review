@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.2
+
+- Avoid treating recently modified files without an auto-capture baseline as newly created files solely because their filesystem timestamp changed
+- Reduce false whole-file additions after Git pulls, branch switches, or scoped baseline misses in large workspaces
+
+## 0.1.1
+
+- Remove files that now match `codexReview.ignoredFileGlobs` from active review sessions when refreshing review data
+- Keep incremental refreshes from reintroducing dirty files that became ignored after the session started
+- Include current Git dirty and untracked files in the auto-capture baseline so existing uncommitted work is treated as the starting point, not as new AI output
+- Recover a Git `HEAD` baseline only for clean files that were missed by a scoped multi-project auto-capture baseline, preventing existing files from being shown as whole-file additions
+- Avoid marking unrelated open documents as newly created during auto-capture sessions when they were outside the scoped baseline
+- Track file watcher event kinds during idle auto-capture so changed files and newly created files can be classified separately
+
 ## 0.1.0
 
 - Highlight token-level differences in the review panel comparison for replaced code blocks

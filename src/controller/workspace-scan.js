@@ -8,12 +8,14 @@ const {
   filterTrackableUris,
   getCurrentTrackedText,
   isTrackableDocument,
+  isTrackableUri,
   readTrackedTextFromUri,
   safeOpenDocument,
   toWorkspaceLabel
 } = require('../review-model')
 const {
   buildWorkspaceScanCandidates,
+  listGitChangedWorkspaceFiles,
   shouldRunFullWorkspaceScan
 } = require('../utils/workspace')
 
@@ -107,6 +109,51 @@ const workspaceScanControllerMethods = {
     }
   },
 
+  // Drops files that became ignored after the session was created.
+  pruneIgnoredSessionUris() {
+    if (!this.session) {
+      return 0
+    }
+
+    const uriStrings = new Set([
+      ...this.session.baselineEntriesByUri.keys(),
+      ...this.session.reviewFiles.keys(),
+      ...this.session.touchedUris,
+      ...this.dirtyWorkspaceUris
+    ])
+    let pruned = 0
+    let reviewDataChanged = false
+
+    for (const uriString of uriStrings) {
+      let uri
+      try {
+        uri = vscode.Uri.parse(uriString)
+      } catch {
+        continue
+      }
+
+      if (isTrackableUri(uri)) {
+        continue
+      }
+
+      if (this.session.baselineEntriesByUri.delete(uriString)) {
+        pruned += 1
+      }
+      if (this.session.reviewFiles.delete(uriString)) {
+        pruned += 1
+        reviewDataChanged = true
+      }
+      this.session.touchedUris.delete(uriString)
+      this.dirtyWorkspaceUris.delete(uriString)
+    }
+
+    if (reviewDataChanged) {
+      this.markReviewDataChanged()
+    }
+
+    return pruned
+  },
+
   // Rebuilds a single review file while preserving existing block decisions when IDs still match.
   async rebuildFile(uriString, providedDocument) {
     if (!this.session) {
@@ -161,6 +208,7 @@ const workspaceScanControllerMethods = {
     }
 
     const profile = this.profiler.startMark('captureWorkspaceBaseline')
+    this.currentGitChangedUriStringsPromise = null
     const workspaceFiles = await this.listTrackableWorkspaceFiles()
 
     try {
@@ -180,10 +228,9 @@ const workspaceScanControllerMethods = {
           }
 
           if (this.sessionMode === 'auto') {
-            // Scoped auto baselines may not include every file in large workspaces.
-            // Only treat missing-baseline files as new when they were touched by
-            // this capture or look freshly changed; otherwise leave them out so
-            // old files from newly discovered roots do not become pending review.
+            // Scoped auto baselines may miss files from other projects. A recent
+            // mtime can recover those, but only when Git also sees local changes;
+            // clean git pulls or branch switches should not become pending review.
             if (await this.shouldTreatAutoMissingBaselineAsNewFile(uri)) {
               this.setSessionBaselineMissing(key)
             }
@@ -201,6 +248,7 @@ const workspaceScanControllerMethods = {
         }
       })
     } finally {
+      this.currentGitChangedUriStringsPromise = null
       this.profiler.finishMark(profile, {
         workspaceFiles: workspaceFiles.length,
         baselineEntries: this.session?.baselineEntriesByUri.size ?? 0
@@ -238,12 +286,30 @@ const workspaceScanControllerMethods = {
 
     const startedAtMs = this.session.startedAtMs ?? Date.parse(this.session.startedAt) ?? Date.now()
     const recentCutoff = startedAtMs - AUTO_CAPTURE_UNBASELINED_FILE_RECENCY_MS
+    let isRecent = false
     try {
       const stat = await vscode.workspace.fs.stat(uri)
-      return stat.mtime >= recentCutoff
+      isRecent = stat.mtime >= recentCutoff
     } catch {
       return false
     }
+
+    return isRecent && await this.isCurrentGitChangedUri(uriString)
+  },
+
+  async isCurrentGitChangedUri(uriString) {
+    if (!uriString) {
+      return false
+    }
+
+    if (!this.currentGitChangedUriStringsPromise) {
+      this.currentGitChangedUriStringsPromise = listGitChangedWorkspaceFiles()
+        .then((result) => new Set(result.uris.map((uri) => uri.toString())))
+        .catch(() => new Set())
+    }
+
+    const changedUriStrings = await this.currentGitChangedUriStringsPromise
+    return changedUriStrings.has(uriString)
   },
 
   // Serializes workspace scans and coalesces overlapping full scans.
@@ -291,26 +357,32 @@ const workspaceScanControllerMethods = {
     }
 
     const profile = this.profiler.startMark('scanWorkspaceForChanges', { reason })
-    if (await this.handleSessionGitStateChange(reason)) {
-      this.profiler.finishMark(profile, {
-        gitStateChanged: 'true'
-      })
-      return
-    }
-
-    const scanSession = this.session
-    const dirtyUrisAtScanStart = new Set(this.dirtyWorkspaceUris)
-    const workspaceFiles = await this.listTrackableWorkspaceFiles()
-    const currentWorkspaceUris = new Map(workspaceFiles.map((uri) => [uri.toString(), uri]))
-    const shouldRunFullScan = shouldRunFullWorkspaceScan(reason)
-    const candidateUris = buildWorkspaceScanCandidates({
-      currentWorkspaceUris,
-      shouldRunFullScan,
-      baselineUriStrings: this.session?.baselineEntriesByUri.keys() ?? [],
-      dirtyWorkspaceUris: this.dirtyWorkspaceUris
-    })
+    this.currentGitChangedUriStringsPromise = null
+    let shouldRunFullScan = false
+    let candidateUris = new Map()
+    let dirtyUrisAtScanStart = new Set()
+    let prunedIgnoredUris = 0
+    let gitStateChanged = false
 
     try {
+      if (await this.handleSessionGitStateChange(reason)) {
+        gitStateChanged = true
+        return
+      }
+
+      const scanSession = this.session
+      prunedIgnoredUris = this.pruneIgnoredSessionUris()
+      dirtyUrisAtScanStart = new Set(this.dirtyWorkspaceUris)
+      const workspaceFiles = await this.listTrackableWorkspaceFiles()
+      const currentWorkspaceUris = new Map(workspaceFiles.map((uri) => [uri.toString(), uri]))
+      shouldRunFullScan = shouldRunFullWorkspaceScan(reason)
+      candidateUris = buildWorkspaceScanCandidates({
+        currentWorkspaceUris,
+        shouldRunFullScan,
+        baselineUriStrings: this.session?.baselineEntriesByUri.keys() ?? [],
+        dirtyWorkspaceUris: this.dirtyWorkspaceUris
+      })
+
       if (this.session !== scanSession) {
         return
       }
@@ -385,12 +457,15 @@ const workspaceScanControllerMethods = {
       }
 
       this.profiler.finishMark(profile, {
+        gitStateChanged: gitStateChanged ? 'true' : 'false',
         fullScan: shouldRunFullScan ? 'true' : 'false',
         candidateUris: candidateUris.size,
+        prunedIgnoredUris,
         touchedUris: this.session?.touchedUris.size ?? 0,
         reviewFiles: this.session?.reviewFiles.size ?? 0,
         dirtyUrisRemaining: this.dirtyWorkspaceUris.size
       })
+      this.currentGitChangedUriStringsPromise = null
     }
 
   }

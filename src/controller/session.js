@@ -57,6 +57,7 @@ const sessionControllerMethods = {
           }
         }
       }
+      const initialTouchedUriSet = new Set(this.session.touchedUris)
 
       if (baselineEntries instanceof Map) {
         for (const [key, entry] of baselineEntries.entries()) {
@@ -86,7 +87,7 @@ const sessionControllerMethods = {
         const key = document.uri.toString()
         if (mode === 'manual') {
           await this.setSessionBaselineText(key, document.getText())
-        } else if (!this.hasSessionBaseline(key)) {
+        } else if (initialTouchedUriSet.has(key) && !this.hasSessionBaseline(key)) {
           this.setSessionBaselineMissing(key)
         }
       }
