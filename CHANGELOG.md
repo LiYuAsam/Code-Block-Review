@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.3
+
+- Group the Explorer review tree by folders, files, and Added/Replaced/Deleted change categories
+- Show stable colored change-category icons and pending counts in the Explorer review tree
+- Cycle through blocks in the same change category when clicking that category repeatedly
+- Remove the unused refresh action from the review tree title bar
+
 ## 0.1.2
 
 - Avoid treating recently modified files without an auto-capture baseline as newly created files solely because their filesystem timestamp changed

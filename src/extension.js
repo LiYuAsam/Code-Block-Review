@@ -103,6 +103,7 @@ class ReviewController {
     this.cachedPendingItems = []
     this.cachedPendingCountVersion = -1
     this.cachedPendingCount = 0
+    this.changeKindNavigationByKey = new Map()
     this.profiler = new ReviewProfiler()
     this.lastAutoCaptureBaselineRefreshAt = 0
     this.autoCaptureBaselineStatus = 'idle'
@@ -193,6 +194,7 @@ class ReviewController {
       vscode.commands.registerCommand('codexReview.refreshReview', () => this.refreshReview()),
       vscode.commands.registerCommand('codexReview.openReviewPanel', (item) => this.openReviewPanel(item)),
       vscode.commands.registerCommand('codexReview.openBlock', (item) => this.openBlock(item)),
+      vscode.commands.registerCommand('codexReview.openChangeKindCategory', (item) => this.openChangeKindCategory(item)),
       vscode.commands.registerCommand('codexReview.previewBlock', (item) => this.previewBlock(item)),
       vscode.commands.registerCommand('codexReview.acceptBlock', (item) => this.acceptBlock(item)),
       vscode.commands.registerCommand('codexReview.rejectBlock', (item) => this.rejectBlock(item)),

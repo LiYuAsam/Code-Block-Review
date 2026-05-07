@@ -70,6 +70,32 @@ const reviewActionControllerMethods = {
     }
   },
 
+  async openChangeKindCategory(item) {
+    if (this.state !== 'reviewing' || !this.session || item?.kind !== 'changeKind' || !item.uri || !item.changeKind) {
+      return false
+    }
+
+    const file = this.session.reviewFiles.get(item.uri.toString())
+    if (!file) {
+      return false
+    }
+
+    const blocks = file.blocks.filter((block) => block.status === 'pending' && block.changeKind === item.changeKind)
+    if (blocks.length === 0) {
+      return false
+    }
+
+    const key = `${file.uri.toString()}::${item.changeKind}`
+    const lastBlockId = this.changeKindNavigationByKey.get(key)
+    const lastIndex = blocks.findIndex((block) => block.id === lastBlockId)
+    const nextIndex = lastIndex >= 0 ? (lastIndex + 1) % blocks.length : 0
+    const targetBlock = blocks[nextIndex]
+
+    this.changeKindNavigationByKey.set(key, targetBlock.id)
+    await this.openBlock(createReviewItem(file.uri, targetBlock))
+    return true
+  },
+
   async openFirstPendingBlock() {
     if (this.state !== 'reviewing' || !this.session) {
       return false
