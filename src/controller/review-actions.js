@@ -68,6 +68,7 @@ const reviewActionControllerMethods = {
       editor.selection = new vscode.Selection(range.start, range.start)
       editor.revealRange(range, vscode.TextEditorRevealType.InCenter)
     }
+    await this.safeRevealReviewTreeItem(createReviewItem(block.uri, block.block))
   },
 
   async openChangeKindCategory(item) {
@@ -92,7 +93,9 @@ const reviewActionControllerMethods = {
     const targetBlock = blocks[nextIndex]
 
     this.changeKindNavigationByKey.set(key, targetBlock.id)
-    await this.openBlock(createReviewItem(file.uri, targetBlock))
+    const targetItem = createReviewItem(file.uri, targetBlock)
+    await this.openBlock(targetItem)
+    await this.syncReviewPanelToBlock(targetItem)
     return true
   },
 
@@ -122,6 +125,7 @@ const reviewActionControllerMethods = {
     }
 
     await this.openBlock(targetItem)
+    await this.syncReviewPanelToBlock(targetItem)
     return true
   },
 

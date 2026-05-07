@@ -171,6 +171,45 @@ const reviewPanelControllerMethods = {
     await this.refreshReviewPanel()
   },
 
+  // Keeps an already-open review panel aligned when navigation starts from CodeLens or the tree.
+  async syncReviewPanelToBlock(item) {
+    if (!this.reviewPanelState || item?.kind !== 'block') {
+      return
+    }
+
+    const block = this.findBlockItem(item)
+    if (!block) {
+      return
+    }
+
+    const panelItem = createReviewItem(block.uri, block.block)
+    this.reviewPanelState.currentItem = panelItem
+    this.reviewPanelState.fallbackBlock = cloneBlockForPreview(block)
+    this.reviewPanelState.sourceViewColumn = this.getPreferredSourceViewColumn()
+    await this.refreshReviewPanel()
+  },
+
+  async safeRevealReviewTreeItem(item) {
+    if (!this.reviewTreeView || !this.treeProvider || item?.kind !== 'block') {
+      return
+    }
+
+    try {
+      const target = this.treeProvider.findItemForReviewItem(item)
+      if (!target) {
+        return
+      }
+
+      await this.reviewTreeView.reveal(target, {
+        select: true,
+        focus: false,
+        expand: true
+      })
+    } catch (error) {
+      console.error('Code Block Review: failed to reveal review tree item', error)
+    }
+  },
+
   // Re-renders panel HTML from the current block, navigation state, and unseen pending count.
   async refreshReviewPanel() {
     if (!this.reviewPanelState) {
@@ -427,6 +466,7 @@ const reviewPanelControllerMethods = {
       editor.selection = new vscode.Selection(range.start, range.start)
       editor.revealRange(range, vscode.TextEditorRevealType.InCenter)
     }
+    await this.safeRevealReviewTreeItem(createReviewItem(block.uri, block.block))
     this.refreshAllVisibleEditors()
   },
 

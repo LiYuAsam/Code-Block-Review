@@ -11,6 +11,7 @@ const {
 
 const WORKSPACE_INCLUDE_GLOB = '**/*'
 const WORKSPACE_EXCLUDE_GLOB = '**/{.git,node_modules,dist,build,out,.next,.turbo,.cache,coverage}/**'
+const GIT_REPOSITORY_DISCOVERY_EXCLUDE_GLOB = '**/{node_modules,dist,build,out,.next,.turbo,.cache,coverage}/**'
 const execFileAsync = promisify(execFile)
 
 // Hashes the current workspace-folder set into a filesystem-safe baseline bucket key.
@@ -191,6 +192,36 @@ async function readGitHeadTextForUri(uri) {
 }
 
 async function listGitChangedWorkspaceFiles() {
+  const repoRootsByKey = await listWorkspaceGitRepositoryRoots()
+
+  const urisByKey = new Map()
+  const changesByUri = new Map()
+  const scannedRepoRoots = new Set()
+  for (const repoRoot of repoRootsByKey.values()) {
+    const changes = await listGitChangedFilesForRepoRoot(repoRoot)
+    if (!changes) {
+      continue
+    }
+
+    scannedRepoRoots.add(repoRoot.toString())
+    for (const change of changes) {
+      const uri = change.uri
+      if (vscode.workspace.getWorkspaceFolder(uri) && isTrackableUri(uri)) {
+        urisByKey.set(uri.toString(), uri)
+        changesByUri.set(uri.toString(), change)
+      }
+    }
+  }
+
+  return {
+    uris: [...urisByKey.values()],
+    changes: [...changesByUri.values()],
+    changesByUri,
+    scannedRepoRoots
+  }
+}
+
+async function listWorkspaceGitRepositoryRoots() {
   const repoRootsByKey = new Map()
 
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
@@ -198,28 +229,48 @@ async function listGitChangedWorkspaceFiles() {
     if (repoRoot) {
       repoRootsByKey.set(repoRoot.toString(), repoRoot)
     }
+
+    const nestedRepoRoots = await findNestedGitRepositoryRoots(folder.uri)
+    for (const nestedRepoRoot of nestedRepoRoots) {
+      repoRootsByKey.set(nestedRepoRoot.toString(), nestedRepoRoot)
+    }
   }
 
-  const urisByKey = new Map()
-  const scannedRepoRoots = new Set()
-  for (const repoRoot of repoRootsByKey.values()) {
-    const changedUris = await listGitChangedFilesForRepoRoot(repoRoot)
-    if (!changedUris) {
-      continue
-    }
+  return repoRootsByKey
+}
 
-    scannedRepoRoots.add(repoRoot.toString())
-    for (const uri of changedUris) {
-      if (vscode.workspace.getWorkspaceFolder(uri) && isTrackableUri(uri)) {
-        urisByKey.set(uri.toString(), uri)
+async function findNestedGitRepositoryRoots(workspaceFolderUri) {
+  if (!workspaceFolderUri || workspaceFolderUri.scheme !== 'file') {
+    return []
+  }
+
+  const rootsByKey = new Map()
+  const gitHeadUris = await vscode.workspace.findFiles(
+    new vscode.RelativePattern(workspaceFolderUri.fsPath, '**/.git/HEAD'),
+    GIT_REPOSITORY_DISCOVERY_EXCLUDE_GLOB
+  )
+
+  for (const gitHeadUri of gitHeadUris) {
+    const repoRoot = vscode.Uri.file(path.dirname(path.dirname(gitHeadUri.fsPath)))
+    rootsByKey.set(repoRoot.toString(), repoRoot)
+  }
+
+  const gitMarkerUris = await vscode.workspace.findFiles(
+    new vscode.RelativePattern(workspaceFolderUri.fsPath, '**/.git'),
+    GIT_REPOSITORY_DISCOVERY_EXCLUDE_GLOB
+  )
+
+  for (const gitMarkerUri of gitMarkerUris) {
+    try {
+      const markerStat = await vscode.workspace.fs.stat(gitMarkerUri)
+      if ((markerStat.type & vscode.FileType.File) !== 0) {
+        const repoRoot = vscode.Uri.file(path.dirname(gitMarkerUri.fsPath))
+        rootsByKey.set(repoRoot.toString(), repoRoot)
       }
-    }
+    } catch {}
   }
 
-  return {
-    uris: [...urisByKey.values()],
-    scannedRepoRoots
-  }
+  return [...rootsByKey.values()]
 }
 
 async function findGitRepositoryRoot(uri) {
@@ -248,14 +299,20 @@ async function listGitChangedFilesForRepoRoot(repoRoot) {
       { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
     )
     return parseGitStatusPorcelain(stdout)
-      .map((relativePath) => vscode.Uri.file(path.join(repoRoot.fsPath, relativePath)))
+      .map((entry) => ({
+        ...entry,
+        uri: vscode.Uri.file(path.join(repoRoot.fsPath, entry.relativePath)),
+        previousUri: entry.previousRelativePath
+          ? vscode.Uri.file(path.join(repoRoot.fsPath, entry.previousRelativePath))
+          : null
+      }))
   } catch {
     return null
   }
 }
 
 function parseGitStatusPorcelain(output) {
-  const paths = []
+  const changes = []
   const entries = String(output || '').split('\0')
 
   for (let index = 0; index < entries.length; index += 1) {
@@ -266,16 +323,48 @@ function parseGitStatusPorcelain(output) {
 
     const status = entry.slice(0, 2)
     const relativePath = entry.slice(3)
-    if (relativePath) {
-      paths.push(relativePath)
-    }
+    let previousRelativePath = null
 
     if (status.includes('R') || status.includes('C')) {
+      previousRelativePath = entries[index + 1] || null
       index += 1
+    }
+
+    if (relativePath) {
+      changes.push({
+        relativePath,
+        previousRelativePath,
+        status,
+        changeKind: classifyGitStatus(status)
+      })
     }
   }
 
-  return paths
+  return changes
+}
+
+function classifyGitStatus(status) {
+  if (status === '??') {
+    return 'added'
+  }
+
+  if (status.includes('R')) {
+    return 'renamed'
+  }
+
+  if (status.includes('C')) {
+    return 'copied'
+  }
+
+  if (status.includes('A')) {
+    return 'added'
+  }
+
+  if (status.includes('D')) {
+    return 'deleted'
+  }
+
+  return 'modified'
 }
 
 async function getUriDirectoryPath(uri) {

@@ -386,6 +386,10 @@ async function safeOpenDocument(uriString) {
 async function getCurrentTrackedText(uri, existsInWorkspace) {
   const openDocument = vscode.workspace.textDocuments.find((document) => document.uri.toString() === uri.toString())
   if (openDocument && isTrackableDocument(openDocument)) {
+    if (!openDocument.isDirty && uri.scheme !== 'untitled' && !existsInWorkspace) {
+      return null
+    }
+
     return openDocument.getText()
   }
 

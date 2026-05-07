@@ -91,6 +91,7 @@ class ReviewController {
     this.pendingWorkspaceRescanReason = null
     this.workspaceScanPromise = null
     this.workspaceScanReason = null
+    this.currentGitChangesByUriPromise = null
     this.autoCaptureFilesystemProbeTimer = null
     this.visibleEditorsRefreshTimer = null
     this.workspaceWatcherDisposables = []
@@ -130,6 +131,9 @@ class ReviewController {
     this.initializeWorkspaceWatchers()
 
     this.treeProvider = new ReviewTreeProvider(this)
+    this.reviewTreeView = vscode.window.createTreeView('codexReview.filesView', {
+      treeDataProvider: this.treeProvider
+    })
     this.blockActionProvider = new ReviewBlockCodeLensProvider(this)
     const decorations = createReviewDecorations()
     this.pendingAddedDecoration = decorations.pendingAdded
@@ -150,7 +154,7 @@ class ReviewController {
       this.statusBarItem,
       this.profiler,
       vscode.workspace.registerTextDocumentContentProvider(DELETED_FILE_PREVIEW_SCHEME, this.deletedFilePreviewProvider),
-      vscode.window.registerTreeDataProvider('codexReview.filesView', this.treeProvider),
+      this.reviewTreeView,
       vscode.languages.registerCodeLensProvider(
         [
           { scheme: 'file' },
@@ -1702,15 +1706,15 @@ class ReviewController {
       const currentText = await getCurrentTrackedText(uri, existsInWorkspace)
       const hadBaseline = this.hasSessionBaseline(uriString)
 
-      if (!hadBaseline && currentText === null) {
-        continue
-      }
-
       if (
         !hadBaseline &&
         this.sessionMode === 'auto' &&
-        !(await this.shouldTreatAutoMissingBaselineAsNewFile(uri))
+        !(await this.ensureAutoMissingBaseline(uri))
       ) {
+        continue
+      }
+
+      if (!this.hasSessionBaseline(uriString) && currentText === null) {
         continue
       }
 

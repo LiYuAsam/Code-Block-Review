@@ -16,6 +16,7 @@ class ReviewTreeProvider {
     this.controller = controller
     this._onDidChangeTreeData = new vscode.EventEmitter()
     this.onDidChangeTreeData = this._onDidChangeTreeData.event
+    this.rootItems = []
   }
 
   refresh() {
@@ -23,17 +24,17 @@ class ReviewTreeProvider {
   }
 
   getTreeItem(element) {
-    if (element instanceof FileItem) {
-      const file = this.controller.session?.reviewFiles.get(element.uri.toString())
-      return file ? new FileItem(file) : element
-    }
-
     return element
+  }
+
+  getParent(element) {
+    return element?.parent ?? null
   }
 
   // Provides the Explorer tree contents for idle, capturing, ready, and reviewing states.
   getChildren(element) {
     if (!this.controller.session) {
+      this.rootItems = []
       if (this.controller.autoCaptureSettings.enabled && this.controller.autoCaptureState === 'armed') {
         return [
           new MessageItem(t('tree.autoArmed'))
@@ -46,7 +47,11 @@ class ReviewTreeProvider {
     }
 
     if (element instanceof ReviewStateItem) {
-      return buildReviewTree(this.controller.getFiles())
+      if (!element.childrenLoaded) {
+        element.children = buildReviewTree(this.controller.getFiles(), element)
+        element.childrenLoaded = true
+      }
+      return element.children
     }
 
     if (element instanceof FolderItem) {
@@ -55,7 +60,13 @@ class ReviewTreeProvider {
 
     if (element instanceof FileItem) {
       const file = this.controller.session?.reviewFiles.get(element.uri.toString())
-      return file ? createChangeKindItems(file) : []
+      element.children = file
+        ? createChangeKindItems(file).map((child) => {
+            child.parent = element
+            return child
+          })
+        : []
+      return element.children
     }
 
     const files = this.controller.getFiles()
@@ -65,13 +76,47 @@ class ReviewTreeProvider {
             ? t('tree.autoReady')
             : t('tree.capturing'))
         : t('tree.noBlocks')
+      this.rootItems = []
       return [new MessageItem(message)]
     }
 
     const label = this.controller.state === 'capturing'
       ? t('tree.captureSession')
       : t('tree.reviewing')
-    return [new ReviewStateItem(label, getPendingCount(files))]
+    this.rootItems = [new ReviewStateItem(label, getPendingCount(files))]
+    return this.rootItems
+  }
+
+  findItemForReviewItem(item) {
+    if (!item?.uri) {
+      return null
+    }
+
+    const roots = this.getChildren()
+    for (const root of roots) {
+      if (root instanceof ReviewStateItem) {
+        this.getChildren(root)
+      }
+
+      const found = findItemInTree(root, (candidate) => (
+        candidate instanceof ChangeKindItem &&
+        candidate.uri.toString() === item.uri.toString() &&
+        candidate.changeKind === item.changeKind
+      ))
+      if (found) {
+        return found
+      }
+
+      const file = findItemInTree(root, (candidate) => (
+        candidate instanceof FileItem &&
+        candidate.uri.toString() === item.uri.toString()
+      ))
+      if (file) {
+        return file
+      }
+    }
+
+    return null
   }
 }
 
@@ -176,15 +221,18 @@ class ReviewBlockCodeLensProvider {
 }
 
 class MessageItem extends vscode.TreeItem {
-  constructor(label) {
+  constructor(label, parent = null) {
     super(label, vscode.TreeItemCollapsibleState.None)
+    this.parent = parent
     this.contextValue = 'message'
   }
 }
 
 class ReviewStateItem extends vscode.TreeItem {
-  constructor(label, count) {
+  constructor(label, count, parent = null) {
     super(label, vscode.TreeItemCollapsibleState.Expanded)
+    this.parent = parent
+    this.children = []
     this.description = String(count)
     this.contextValue = 'reviewState'
     this.iconPath = new vscode.ThemeIcon('sync~spin')
@@ -196,9 +244,13 @@ class ReviewStateItem extends vscode.TreeItem {
 }
 
 class FolderItem extends vscode.TreeItem {
-  constructor(label, children, count) {
+  constructor(label, children, count, parent = null) {
     super(label, vscode.TreeItemCollapsibleState.Expanded)
+    this.parent = parent
     this.children = children
+    for (const child of this.children) {
+      child.parent = this
+    }
     this.description = String(count)
     this.contextValue = 'folder'
     this.iconPath = new vscode.ThemeIcon('folder')
@@ -206,7 +258,7 @@ class FolderItem extends vscode.TreeItem {
 }
 
 class FileItem extends vscode.TreeItem {
-  constructor(file) {
+  constructor(file, parent = null) {
     const pendingCount = file.blocks.filter((block) => block.status === 'pending').length
     const acceptedCount = file.blocks.filter((block) => block.status === 'accepted').length
     const description = String(pendingCount > 0 ? pendingCount : acceptedCount)
@@ -215,6 +267,8 @@ class FileItem extends vscode.TreeItem {
     super(path.posix.basename(normalizeTreePath(file.label)), hasChildren
       ? vscode.TreeItemCollapsibleState.Expanded
       : vscode.TreeItemCollapsibleState.None)
+    this.parent = parent
+    this.children = []
     this.file = file
     this.kind = 'file'
     this.uri = file.uri
@@ -232,10 +286,11 @@ class FileItem extends vscode.TreeItem {
 }
 
 class ChangeKindItem extends vscode.TreeItem {
-  constructor(file, changeKind, blocks) {
+  constructor(file, changeKind, blocks, parent = null) {
     const firstBlock = blocks[0]
 
     super(getChangeKindLabel(changeKind), vscode.TreeItemCollapsibleState.None)
+    this.parent = parent
     this.kind = 'changeKind'
     this.uri = file.uri
     this.changeKind = changeKind
@@ -254,7 +309,7 @@ class ChangeKindItem extends vscode.TreeItem {
 
 const CHANGE_KIND_ORDER = ['addition', 'modification', 'deletion']
 
-function buildReviewTree(files) {
+function buildReviewTree(files, parent = null) {
   const root = {
     folders: new Map(),
     files: []
@@ -283,17 +338,21 @@ function buildReviewTree(files) {
     current.files.push(file)
   }
 
-  return createTreeChildren(root)
+  return createTreeChildren(root, parent)
 }
 
-function createTreeChildren(node) {
+function createTreeChildren(node, parent = null) {
   const folderItems = [...node.folders.values()]
     .sort((left, right) => left.label.localeCompare(right.label))
-    .map((folder) => new FolderItem(folder.label, createTreeChildren(folder), getPendingCount(getNodeFiles(folder))))
+    .map((folder) => {
+      const item = new FolderItem(folder.label, [], getPendingCount(getNodeFiles(folder)), parent)
+      item.children = createTreeChildren(folder, item)
+      return item
+    })
 
   const fileItems = node.files
     .sort((left, right) => left.label.localeCompare(right.label))
-    .map((file) => new FileItem(file))
+    .map((file) => new FileItem(file, parent))
 
   return [...folderItems, ...fileItems]
 }
@@ -314,6 +373,38 @@ function createChangeKindItems(file) {
       return blocks.length > 0 ? new ChangeKindItem(file, changeKind, blocks) : null
     })
     .filter(Boolean)
+}
+
+function findItemInTree(item, predicate) {
+  if (!item) {
+    return null
+  }
+
+  if (predicate(item)) {
+    return item
+  }
+
+  const children = item instanceof ReviewStateItem || item instanceof FolderItem
+    ? item.children
+    : item instanceof FileItem
+        ? (item.children.length > 0 ? item.children : createChangeKindItems(item.file).map((child) => {
+            child.parent = item
+            return child
+          }))
+        : []
+
+  if (item instanceof FileItem && item.children.length === 0) {
+    item.children = children
+  }
+
+  for (const child of children) {
+    const found = findItemInTree(child, predicate)
+    if (found) {
+      return found
+    }
+  }
+
+  return null
 }
 
 function getPendingCount(files) {

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.4
+
+- Keep the review panel in sync when navigating to the previous or next block from inline editor actions
+- Detect nested Git repositories inside large aggregate workspaces when checking changed files
+- Use Git status details to distinguish newly added files from modified, deleted, copied, or renamed files when scoped auto-capture baselines miss a file
+- Recover Git `HEAD` content as the baseline for missed modified files instead of showing them as whole-file additions
+- Skip missed Git-tracked files when their `HEAD` baseline cannot be recovered, avoiding false whole-file additions
+
 ## 0.1.3
 
 - Group the Explorer review tree by folders, files, and Added/Replaced/Deleted change categories
